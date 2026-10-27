@@ -108,6 +108,29 @@ jobs:
           export CTOOLS_BUILD=all
           ./acore.sh compiler build
 
+      - name: Install compiled binaries and tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $PWD 'azerothcore/var/build/obj'
+          if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
+            throw 'CMake build directory not found'
+          }
+          # The upstream acore.sh script skips its install phase when OSTYPE=cygwin
+          # on GitHub's Windows bash runner, despite successful MSVC compilation.
+          # Explicit installation copies EXEs, extractors and configuration files
+          # from var/build/obj/bin/Release into env/dist.
+          cmake --install $build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
+
+          $dist = Join-Path $PWD 'azerothcore/env/dist'
+          foreach ($exe in @('authserver.exe', 'worldserver.exe')) {
+            $installed = Get-ChildItem -Path $dist -Recurse -File -Filter $exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $installed) { throw "Required $exe missing after CMake install" }
+            Write-Host "Verified installed $exe at $($installed.FullName)"
+          }
+
       - name: Package compiled binaries, configs and required runtime DLLs
         shell: pwsh
         run: |
