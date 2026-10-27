@@ -46,14 +46,14 @@ jobs:
         id: cache-openssl
         with:
           path: C:/libs/openssl
-          key: \${{ steps.openssl-info.outputs.cache-key }}
+          key: ${{ steps.openssl-info.outputs.cache-key }}
 
       - name: Install OpenSSL
-        if: \${{ steps.cache-openssl.outputs.cache-hit != 'true' }}
+        if: ${{ steps.cache-openssl.outputs.cache-hit != 'true' }}
         shell: pwsh
         run: |
           $Installer = Join-Path $env:TEMP 'openssl-installer.exe'
-          Invoke-WebRequest -Uri '\${{ steps.openssl-info.outputs.url }}' -OutFile $Installer
+          Invoke-WebRequest -Uri '${{ steps.openssl-info.outputs.url }}' -OutFile $Installer
           Start-Process -Wait -FilePath $Installer -ArgumentList @('/SILENT','/SP-','/SUPPRESSMSGBOXES',('/DIR=' + $env:OPENSSL_ROOT_DIR))
           if (-not (Test-Path "$env:OPENSSL_ROOT_DIR/bin/libssl-3-x64.dll")) { throw 'OpenSSL install check failed.' }
 
@@ -79,7 +79,7 @@ jobs:
       - name: Configure
         shell: pwsh
         env:
-          BOOST_ROOT: \${{ steps.install-boost.outputs.BOOST_ROOT }}
+          BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
         run: |
           cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DTOOLS=ON
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
