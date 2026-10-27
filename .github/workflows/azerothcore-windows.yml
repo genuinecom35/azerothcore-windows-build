@@ -202,6 +202,51 @@ jobs:
             "AH Bot: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
           ) | Set-Content -Path (Join-Path $to 'VERSIONS.txt') -Encoding utf8
 
+      - name: Package first-run Windows setup and SQL database sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          $setup = Join-Path $PWD 'customization/setup'
+          $sourceSql = Join-Path $PWD 'azerothcore/data/sql'
+          $sqlTarget = Join-Path $dest 'SQL_SOURCE/data/sql'
+          $custom = Join-Path $dest 'CUSTOM'
+
+          if (-not (Test-Path (Join-Path $setup 'SETUP_SERVER.ps1'))) {
+            throw 'Setup scripts missing from customization repository'
+          }
+          if (-not (Test-Path (Join-Path $sourceSql 'base/db_world'))) {
+            throw 'AzerothCore base SQL directory missing'
+          }
+          New-Item -ItemType Directory -Force -Path $sqlTarget | Out-Null
+          Copy-Item -Path (Join-Path $sourceSql '*') -Destination $sqlTarget -Recurse -Force
+          if (-not (Test-Path (Join-Path $sqlTarget 'base/db_world'))) {
+            throw 'SQL source copy failed'
+          }
+
+          $entrypoints = @(
+            'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
+            'START_SERVER.cmd', 'START_AUTH.cmd', 'START_WORLD.cmd',
+            'DIAGNOSTICS.ps1', 'DIAGNOSTICS.cmd', 'PREPARE_EXTRACTORS.cmd',
+            'README_RU.txt'
+          )
+          foreach ($file in $entrypoints) {
+            $from = Join-Path $setup $file
+            if (-not (Test-Path $from)) { throw "Missing setup file: $file" }
+            Copy-Item -LiteralPath $from -Destination (Join-Path $dest $file) -Force
+          }
+
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.ps1') -Destination $custom -Force
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.cmd') -Destination $custom -Force
+
+          $extractor = Join-Path $PWD 'azerothcore/apps/extractor/extractor.bat'
+          if (-not (Test-Path $extractor)) { throw 'Official extractor.bat missing from source' }
+          Copy-Item -LiteralPath $extractor -Destination (Join-Path $dest 'extractor.bat') -Force
+
+          New-Item -ItemType Directory -Force -Path (Join-Path $dest 'Data') | Out-Null
+          Write-Host 'Included SQL base/updates, first-run setup, extractors, and custom items.'
+          Get-ChildItem $dest -Name
+
       - name: Upload Windows server ZIP artifact
         uses: actions/upload-artifact@v4
         with:
