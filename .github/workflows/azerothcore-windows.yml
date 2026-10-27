@@ -8,6 +8,7 @@ on:
       - '.github/workflows/azerothcore-windows.yml'
       - 'custom/**'
       - 'setup/**'
+      - 'patches/**'
 
 permissions:
   contents: read
@@ -334,6 +335,18 @@ jobs:
           }
           Copy-Item -LiteralPath $transmogNpcRepair -Destination (Join-Path $custom 'TRANSMOG_NPC_SAFE.sql') -Force
           Write-Host 'Bundled non-destructive Transmog NPC registration SQL.'
+
+          # Include the optional, standalone AlterShop-on-GM-Island expansion.
+          # Manual installation only: never modify an existing user's databases.
+          $shopFiles = @('ALTERSHOP_GM_ISLAND.sql','APPLY_ALTERSHOP.cmd','ALTERSHOP_README_RU.md')
+          foreach ($file in $shopFiles) {
+            $from = Join-Path $PWD "customization/patches/$file"
+            if (-not (Test-Path -LiteralPath $from)) {
+              throw "Missing AlterShop add-on file: $file"
+            }
+            Copy-Item -LiteralPath $from -Destination (Join-Path $custom $file) -Force
+            Write-Host "Bundled AlterShop add-on file: $file"
+          }
 
           $entrypoints = @(
             'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
