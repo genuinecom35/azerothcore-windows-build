@@ -1,0 +1,145 @@
+name: Build WoW Legion 7.3.5 (Windows x64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [legion-7.3.5-build]
+    paths:
+      - '.github/workflows/legion-windows.yml'
+      - 'legion/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+    env:
+      CMAKE_BUILD_TYPE: RelWithDebInfo
+      MYSQL_ROOT_DIR: C:/Program Files/MySQL/MySQL Server 8.0
+      OPENSSL_ROOT_DIR: C:/libs/openssl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: package
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Titans-Project/LegionCore-Reforged
+          ref: main
+          path: legion-src
+
+      - name: Get OpenSSL installer metadata
+        id: openssl-info
+        shell: pwsh
+        run: |
+          $Url = 'https://api.github.com/repos/slproweb/opensslhashes/contents/win32_openssl_hashes.json'
+          $Headers = @{ Accept = 'application/vnd.github.raw+json' }
+          $Data = Invoke-RestMethod $Url -Headers $Headers
+          $OpenSSL = $Data.files.PSObject.Properties | Select-Object -ExpandProperty Value | Where-Object { $_.arch -eq 'INTEL' -and $_.bits -eq '64' -and $_.light -eq $false -and $_.installer -eq 'exe' } | Sort-Object -Descending @{ Expression = { [version]$_.basever } } | Select-Object -First 1
+          if (-not $OpenSSL) { throw 'OpenSSL installer metadata not found.' }
+          "url=$($OpenSSL.url)" >> $env:GITHUB_OUTPUT
+          "cache-key=openssl-$($OpenSSL.basever)-win-$($OpenSSL.arch)-$($OpenSSL.bits)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/cache@v4
+        id: cache-openssl
+        with:
+          path: C:/libs/openssl
+          key: \${{ steps.openssl-info.outputs.cache-key }}
+
+      - name: Install OpenSSL
+        if: \${{ steps.cache-openssl.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $Installer = Join-Path $env:TEMP 'openssl-installer.exe'
+          Invoke-WebRequest -Uri '\${{ steps.openssl-info.outputs.url }}' -OutFile $Installer
+          Start-Process -Wait -FilePath $Installer -ArgumentList @('/SILENT','/SP-','/SUPPRESSMSGBOXES',('/DIR=' + $env:OPENSSL_ROOT_DIR))
+          if (-not (Test-Path "$env:OPENSSL_ROOT_DIR/bin/libssl-3-x64.dll")) { throw 'OpenSSL install check failed.' }
+
+      - uses: MarkusJx/install-boost@v2.4.5
+        id: install-boost
+        with:
+          boost_version: 1.84.0
+          link: static
+          platform_version: 2022
+          toolset: msvc
+
+      - uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:MYSQL_ROOT_DIR/lib/libmysql.dll")) { throw "MySQL client DLL not found at $env:MYSQL_ROOT_DIR" }
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        shell: pwsh
+        env:
+          BOOST_ROOT: \${{ steps.install-boost.outputs.BOOST_ROOT }}
+        run: |
+          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DTOOLS=ON
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/legion-src/build" --config $env:CMAKE_BUILD_TYPE --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
+
+      - name: Verify binaries
+        shell: pwsh
+        run: |
+          $Bin = Join-Path $env:GITHUB_WORKSPACE "legion-src/build/bin/$env:CMAKE_BUILD_TYPE"
+          foreach ($Exe in @('worldserver.exe','bnetserver.exe','mapextractor.exe','vmap4extractor.exe','vmap4assembler.exe','mmaps_generator.exe','connection_patcher.exe')) {
+            if (-not (Test-Path (Join-Path $Bin $Exe))) { throw "Required executable missing: $Exe" }
+          }
+          Push-Location $Bin
+          try {
+            .\worldserver.exe --version
+            if ($LASTEXITCODE -ne 0) { throw 'worldserver version check failed' }
+            .\bnetserver.exe --version
+            if ($LASTEXITCODE -ne 0) { throw 'bnetserver version check failed' }
+          } finally { Pop-Location }
+
+      - name: Package server
+        shell: pwsh
+        run: |
+          $Workspace = $env:GITHUB_WORKSPACE
+          $Bin = Join-Path $Workspace "legion-src/build/bin/$env:CMAKE_BUILD_TYPE"
+          $Dist = Join-Path $Workspace 'deliver/Legion-7.3.5-Windows-x64'
+          New-Item -ItemType Directory -Path $Dist -Force | Out-Null
+          Copy-Item -Path (Join-Path $Bin '*') -Destination $Dist -Recurse -Force
+          Copy-Item (Join-Path $Workspace 'legion-src/src/server/bnetserver/bnetserver.conf.dist') $Dist
+          Copy-Item (Join-Path $Workspace 'legion-src/src/server/worldserver/worldserver.conf.dist') $Dist
+          Copy-Item (Join-Path $Workspace 'legion-src/sql') (Join-Path $Dist 'sql') -Recurse -Force
+          $Scripts = Join-Path $Workspace 'package/legion'
+          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','README_RU.md')) {
+            $Source = Join-Path $Scripts $File
+            if (-not (Test-Path $Source)) { throw "Package script missing: $Source" }
+            Copy-Item $Source $Dist
+          }
+          $OpenSslDir = Join-Path $env:OPENSSL_ROOT_DIR 'bin'
+          foreach ($Pair in @(
+            @{ Name = 'libmysql.dll'; Source = (Join-Path $env:MYSQL_ROOT_DIR 'lib/libmysql.dll') },
+            @{ Name = 'libssl-3-x64.dll'; Source = (Join-Path $OpenSslDir 'libssl-3-x64.dll') },
+            @{ Name = 'libcrypto-3-x64.dll'; Source = (Join-Path $OpenSslDir 'libcrypto-3-x64.dll') },
+            @{ Name = 'legacy.dll'; Source = (Join-Path $OpenSslDir 'legacy.dll') }
+          )) {
+            if (-not (Test-Path $Pair.Source)) { throw "Missing runtime DLL: $($Pair.Source)" }
+            Copy-Item $Pair.Source (Join-Path $Dist $Pair.Name) -Force
+          }
+          $Sha = (git -C (Join-Path $Workspace 'legion-src') rev-parse HEAD).Trim()
+          $Info = @('WoW Legion 7.3.5 build 26972 - Windows x64', 'Source: https://github.com/Titans-Project/LegionCore-Reforged', "Revision: $Sha", "Built UTC: $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))", 'Client files are not included.', 'Build success does not certify every PvE quest, dungeon, raid or class mechanic.') -join [Environment]::NewLine
+          Set-Content -Path (Join-Path $Dist 'BUILD_INFO.txt') -Value $Info -Encoding utf8
+          if (-not (Test-Path (Join-Path $Dist 'sql/base/world/world_database_01.sql'))) { throw 'World SQL base missing.' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Legion-7.3.5-Windows-x64
+          path: deliver/Legion-7.3.5-Windows-x64/
+          if-no-files-found: error
+          retention-days: 14
