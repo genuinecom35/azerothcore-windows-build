@@ -300,6 +300,26 @@ jobs:
             throw 'SQL source copy failed'
           }
 
+          # Ship module SQL along with the core. The two modules require their
+          # own auth/characters/world statements; the core SQL alone is not enough.
+          # Preserve the module source directory layout for AzerothCore updater.
+          $moduleSqlRoot = Join-Path $dest 'SQL_SOURCE/modules'
+          foreach ($mod in @('mod-ah-bot', 'mod-transmog')) {
+            $modSource = Join-Path $PWD "azerothcore/modules/$mod/data/sql"
+            if (-not (Test-Path -LiteralPath $modSource)) {
+              throw "Required SQL for module $mod not found at $modSource"
+            }
+            $modTarget = Join-Path $moduleSqlRoot "$mod/data/sql"
+            New-Item -ItemType Directory -Force -Path $modTarget | Out-Null
+            Copy-Item -Path (Join-Path $modSource '*') -Destination $modTarget -Recurse -Force
+            Write-Host "Bundled $mod module SQL under SQL_SOURCE/modules"
+          }
+          $ahFile = Join-Path $moduleSqlRoot 'mod-ah-bot/data/sql/db-world/mod_auctionhousebot.sql'
+          if (-not (Test-Path -LiteralPath $ahFile)) {
+            throw 'Auction House Bot database initialization SQL was not packaged'
+          }
+          Write-Host 'Required AH Bot SQL verified.'
+
           $entrypoints = @(
             'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
             'START_SERVER.cmd', 'START_AUTH.cmd', 'START_WORLD.cmd',
