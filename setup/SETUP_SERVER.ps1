@@ -73,7 +73,7 @@ $bytes = New-Object byte[] 24
 $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
 try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
 $dbPassword = [BitConverter]::ToString($bytes).Replace('-','').ToLowerInvariant()
-$dbUser = 'acore_local335'
+$dbUser = 'acore_' + $dbPassword.Substring(0, 8)
 
 $createSql = @"
 CREATE DATABASE acore_auth CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -81,8 +81,6 @@ CREATE DATABASE acore_characters CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_c
 CREATE DATABASE acore_world CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '$dbUser'@'localhost' IDENTIFIED BY '$dbPassword';
 CREATE USER IF NOT EXISTS '$dbUser'@'127.0.0.1' IDENTIFIED BY '$dbPassword';
-ALTER USER '$dbUser'@'localhost' IDENTIFIED BY '$dbPassword';
-ALTER USER '$dbUser'@'127.0.0.1' IDENTIFIED BY '$dbPassword';
 GRANT ALL PRIVILEGES ON acore_auth.* TO '$dbUser'@'localhost';
 GRANT ALL PRIVILEGES ON acore_characters.* TO '$dbUser'@'localhost';
 GRANT ALL PRIVILEGES ON acore_world.* TO '$dbUser'@'localhost';
