@@ -320,6 +320,15 @@ jobs:
           }
           Write-Host 'Required AH Bot SQL verified.'
 
+          # This additive SQL script fixes missing Transmog module_string rows
+          # without removing existing localization, player data or item unlocks.
+          $transmogRepair = Join-Path $PWD 'customization/patches/TRANSMOG_STRINGS_SAFE.sql'
+          if (-not (Test-Path -LiteralPath $transmogRepair)) {
+            throw 'Safe Transmog string recovery SQL missing'
+          }
+          Copy-Item -LiteralPath $transmogRepair -Destination (Join-Path $custom 'TRANSMOG_STRINGS_SAFE.sql') -Force
+          Write-Host 'Bundled non-destructive Transmog module-string recovery SQL.'
+
           $entrypoints = @(
             'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
             'START_SERVER.cmd', 'START_AUTH.cmd', 'START_WORLD.cmd',
