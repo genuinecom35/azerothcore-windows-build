@@ -1,6 +1,6 @@
 # Basic offline readiness check. Does not modify MySQL or configuration.
 $ErrorActionPreference = 'Stop'
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path $PSScriptRoot).Path
 $errors = New-Object System.Collections.Generic.List[string]
 function Check([string]$rel, [string]$label) {
     $full = Join-Path $root $rel
