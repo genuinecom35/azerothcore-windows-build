@@ -1,0 +1,151 @@
+name: Build AzerothCore 3.3.5a (Windows x64)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/azerothcore-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  windows-build:
+    name: Compile and package Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 330
+    env:
+      BOOST_ROOT: 'C:\local\boost_1_87_0'
+    steps:
+      - name: Checkout AzerothCore
+        uses: actions/checkout@v4
+        with:
+          repository: azerothcore/azerothcore-wotlk
+          ref: master
+          submodules: recursive
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Cache Boost and MySQL
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\local\boost_1_87_0
+            C:\tools\mysql\current
+          key: azerothcore-windows-boost187-mysql849-v1
+
+      - name: Install Boost 1.87 and MySQL 8.4 client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+
+          if (-not (Test-Path 'C:\local\boost_1_87_0\boost\version.hpp')) {
+            $url = 'https://downloads.sourceforge.net/project/boost/boost-binaries/1.87.0/boost_1_87_0-msvc-14.3-64.exe'
+            $exe = Join-Path $env:RUNNER_TEMP 'boost.exe'
+            $success = $false
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Invoke-WebRequest -Uri $url -OutFile $exe -UserAgent 'azerothcore-ci' -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60
+                if ((Get-Item $exe).Length -lt 50MB) { throw 'Boost download is too small' }
+                $success = $true
+                break
+              } catch {
+                Write-Warning "Boost attempt $attempt failed: $_"
+                if ($attempt -lt 3) { Start-Sleep -Seconds 15 }
+              }
+            }
+            if (-not $success) { throw 'Could not download Boost' }
+            $proc = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:\local\boost_1_87_0' -PassThru -Wait
+            if ($proc.ExitCode -ne 0) { throw "Boost installer exit code: $($proc.ExitCode)" }
+            if (-not (Test-Path 'C:\local\boost_1_87_0\boost\version.hpp')) { throw 'Boost headers missing after install' }
+          }
+          if (-not (Test-Path 'C:\local\boost_1_87_0\lib64-msvc-14.3')) { throw 'Boost libraries missing' }
+
+          if (-not (Test-Path 'C:\tools\mysql\current\lib\mysqlclient.lib')) {
+            $zip = Join-Path $env:RUNNER_TEMP 'mysql.zip'
+            Invoke-WebRequest -Uri 'https://cdn.mysql.com/archives/mysql-8.4/mysql-8.4.9-winx64.zip' -OutFile $zip -UserAgent 'Mozilla/5.0'
+            if ((Get-Item $zip).Length -lt 50MB) { throw 'MySQL archive is too small' }
+            New-Item -ItemType Directory -Force -Path 'C:\tools\mysql' | Out-Null
+            Expand-Archive -Path $zip -DestinationPath 'C:\tools\mysql' -Force
+            if (Test-Path 'C:\tools\mysql\current') { Remove-Item 'C:\tools\mysql\current' -Recurse -Force }
+            Rename-Item 'C:\tools\mysql\mysql-8.4.9-winx64' 'C:\tools\mysql\current'
+          }
+          if (-not (Test-Path 'C:\tools\mysql\current\lib\mysqlclient.lib')) { throw 'MySQL client import lib missing' }
+
+          $opensslRoot = @($env:OPENSSL_ROOT_DIR, 'C:\Program Files\OpenSSL', 'C:\Program Files\OpenSSL-Win64') |
+            Where-Object { $_ -and (Test-Path (Join-Path $_ 'include\openssl\opensslv.h')) } |
+            Select-Object -First 1
+          if (-not $opensslRoot) { throw 'OpenSSL development installation missing on runner' }
+          "OPENSSL_ROOT_DIR=$opensslRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "OpenSSL root: $opensslRoot"
+
+      - name: Compile AzerothCore and extractors
+        shell: bash
+        run: |
+          export CTOOLS_BUILD=all
+          ./acore.sh compiler build
+
+      - name: Package compiled binaries, configs and required runtime DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'env/dist'
+          if (-not (Test-Path $src)) { throw 'AzerothCore install directory env/dist not found' }
+          $world = Get-ChildItem -Path $src -Recurse -File -Filter 'worldserver.exe' | Select-Object -First 1
+          $auth  = Get-ChildItem -Path $src -Recurse -File -Filter 'authserver.exe' | Select-Object -First 1
+          if (-not $world -or -not $auth) { throw 'Compilation did not produce worldserver.exe and authserver.exe' }
+
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+          $relativeBin = [System.IO.Path]::GetRelativePath($src, $world.DirectoryName)
+          $destBin = Join-Path $dest $relativeBin
+          New-Item -ItemType Directory -Force -Path $destBin | Out-Null
+          Write-Host "Executable folder: $relativeBin"
+
+          $runtimeSearchRoots = @('C:\tools\mysql\current', $env:OPENSSL_ROOT_DIR)
+          foreach ($dll in @('libmysql.dll','libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+            if (Test-Path (Join-Path $destBin $dll)) { continue }
+            $found = $null
+            foreach ($root in $runtimeSearchRoots) {
+              if ($root -and (Test-Path $root)) {
+                $found = Get-ChildItem -Path $root -Recurse -File -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { break }
+              }
+            }
+            if ($found) {
+              Copy-Item -Path $found.FullName -Destination (Join-Path $destBin $dll) -Force
+              Write-Host "Bundled $dll"
+            } else {
+              Write-Warning "$dll not found on runner. It may be required on the target Windows PC."
+            }
+          }
+
+          @'
+          AZEROTHCORE 3.3.5a - WINDOWS SERVER BUILD
+
+          This artifact was compiled on the Windows GitHub Actions runner.
+          It contains server binaries, configs and extractor tools generated by the AzerothCore build.
+          It does NOT include a WoW game client, MySQL server, database contents or extracted maps.
+
+          1) Install and run MySQL 8.4 locally (or configure a compatible remote DB).
+          2) Copy *.conf.dist to *.conf (where applicable) and set correct DB credentials.
+          3) Initialize AzerothCore auth/characters/world databases according to the official instructions.
+          4) Extract maps/vmaps/mmaps/dbc from your own WoW 3.3.5a client with bundled extractors.
+          5) Put extracted data where worldserver expects it; start authserver.exe then worldserver.exe.
+          6) Use the WoW 3.3.5a client's realmlist set to the server address.
+
+          Official install documentation: https://www.azerothcore.org/wiki/installation
+          Compiled from: https://github.com/azerothcore/azerothcore-wotlk
+          '@ | Set-Content -Path (Join-Path $dest 'READ_ME_FIRST.txt') -Encoding utf8
+
+      - name: Upload Windows server ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzerothCore-3.3.5a-Windows-x64
+          path: deliver/AzerothCore-Windows-x64/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
