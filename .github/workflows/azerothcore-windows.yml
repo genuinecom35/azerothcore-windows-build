@@ -328,6 +328,12 @@ jobs:
           }
           Copy-Item -LiteralPath $transmogRepair -Destination (Join-Path $custom 'TRANSMOG_STRINGS_SAFE.sql') -Force
           Write-Host 'Bundled non-destructive Transmog module-string recovery SQL.'
+          $transmogNpcRepair = Join-Path $PWD 'customization/patches/TRANSMOG_NPC_SAFE.sql'
+          if (-not (Test-Path -LiteralPath $transmogNpcRepair)) {
+            throw 'Safe Transmog NPC registration SQL missing'
+          }
+          Copy-Item -LiteralPath $transmogNpcRepair -Destination (Join-Path $custom 'TRANSMOG_NPC_SAFE.sql') -Force
+          Write-Host 'Bundled non-destructive Transmog NPC registration SQL.'
 
           $entrypoints = @(
             'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
