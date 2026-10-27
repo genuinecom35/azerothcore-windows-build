@@ -3,7 +3,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$root = (Resolve-Path $PSScriptRoot).Path
 $cfgDir = Join-Path $root 'configs'
 $dataDir = Join-Path $root 'Data'
 $sqlDir = Join-Path $root 'SQL_SOURCE\data\sql'
