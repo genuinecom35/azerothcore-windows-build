@@ -216,23 +216,32 @@ jobs:
             "MySQL client DLL file version: $($mysqlDll.VersionInfo.FileVersion)"
           $info | Set-Content -Path (Join-Path $dest 'MYSQL_VERSION.txt') -Encoding utf8
 
-          $runtimeSearchRoots = @($env:OPENSSL_ROOT_DIR)
-          foreach ($dll in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
-            if (Test-Path (Join-Path $destBin $dll)) { continue }
-            $found = $null
-            foreach ($root in $runtimeSearchRoots) {
-              if ($root -and (Test-Path $root)) {
-                $found = Get-ChildItem -Path $root -Recurse -File -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($found) { break }
-              }
-            }
-            if ($found) {
-              Copy-Item -Path $found.FullName -Destination (Join-Path $destBin $dll) -Force
-              Write-Host "Bundled $dll"
-            } else {
-              Write-Warning "$dll not found on runner. It may be required on the target Windows PC."
-            }
+          # AzerothCore's SetupLibrariesForWindows() requires legacy.dll
+          # alongside authserver.exe and worldserver.exe. Bundle the provider
+          # from the same OpenSSL installation as both runtime DLLs.
+          $opensslRoot = $env:OPENSSL_ROOT_DIR
+          if (-not $opensslRoot -or -not (Test-Path -LiteralPath $opensslRoot)) {
+            throw 'Missing configured OPENSSL_ROOT_DIR during packaging'
           }
+          $opensslFiles = @('libssl-3-x64.dll', 'libcrypto-3-x64.dll', 'legacy.dll')
+          foreach ($dll in $opensslFiles) {
+            $found = Get-ChildItem -LiteralPath $opensslRoot -Recurse -File -Filter $dll -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $found) {
+              throw "Required OpenSSL runtime component $dll was not found under $opensslRoot"
+            }
+            Copy-Item -LiteralPath $found.FullName -Destination (Join-Path $destBin $dll) -Force
+            Write-Host "Bundled OpenSSL runtime: $dll from $($found.FullName)"
+          }
+          $legacyPackaged = Join-Path $destBin 'legacy.dll'
+          if (-not (Test-Path -LiteralPath $legacyPackaged)) {
+            throw 'Packaging error: AzerothCore requires legacy.dll beside server EXEs'
+          }
+          @(
+            "OpenSSL directory: $opensslRoot"
+            "OpenSSL legacy provider: $legacyPackaged"
+            'OpenSSL shared libraries and legacy provider bundled from one installation.'
+          ) | Set-Content -Path (Join-Path $dest 'OPENSSL_RUNTIME.txt') -Encoding utf8
 
           @'
           AZEROTHCORE 3.3.5a - WINDOWS SERVER BUILD
