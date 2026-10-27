@@ -60,7 +60,7 @@ if ($ok -ne 'YES') { Write-Host 'Cancelled. Enter YES when ready.'; exit 1 }
 
 Write-Host 'Enter your MySQL root password for checking existing databases:'
 $checkQuery = "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name IN ('acore_auth','acore_world','acore_characters');"
-$result = @(& $mysql '--protocol=tcp' '-h' '127.0.0.1' '-P' '3306' '-u' 'root' '-p' '--batch' '--skip-column-names' "--execute=$checkQuery" 2>&1)
+$result = @(& $mysql '--protocol=tcp' '-h' '127.0.0.1' '-P' '3306' '-u' 'root' '-p' '--batch' '--skip-column-names' "--execute=$checkQuery")
 if ($LASTEXITCODE -ne 0) {
     throw "Cannot connect to local MySQL as root. Verify service and password. Details: $($result -join ' ')"
 }
