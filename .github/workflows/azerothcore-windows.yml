@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/azerothcore-windows.yml'
+      - 'custom/**'
 
 permissions:
   contents: read
@@ -18,11 +19,19 @@ jobs:
     env:
       BOOST_ROOT: 'C:\local\boost_1_87_0'
     steps:
+      - name: Checkout customization repository
+        uses: actions/checkout@v4
+        with:
+          path: customization
+          persist-credentials: false
+          fetch-depth: 1
+
       - name: Checkout AzerothCore
         uses: actions/checkout@v4
         with:
           repository: azerothcore/azerothcore-wotlk
           ref: master
+          path: azerothcore
           submodules: recursive
           persist-credentials: false
           fetch-depth: 1
@@ -81,9 +90,21 @@ jobs:
           "OPENSSL_ROOT_DIR=$opensslRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "OpenSSL root: $opensslRoot"
 
-      - name: Compile AzerothCore and extractors
+      - name: Install AzerothCore modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git clone --depth 1 https://github.com/azerothcore/mod-transmog.git azerothcore/modules/mod-transmog
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to clone mod-transmog' }
+          git clone --depth 1 https://github.com/azerothcore/mod-ah-bot.git azerothcore/modules/mod-ah-bot
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to clone mod-ah-bot' }
+          Write-Host "Transmog revision: $(git -C azerothcore/modules/mod-transmog rev-parse HEAD)"
+          Write-Host "AH Bot revision: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
+
+      - name: Compile AzerothCore, modules and extractors
         shell: bash
         run: |
+          cd azerothcore
           export CTOOLS_BUILD=all
           ./acore.sh compiler build
 
@@ -91,8 +112,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $src = Join-Path $PWD 'env/dist'
-          if (-not (Test-Path $src)) { throw 'AzerothCore install directory env/dist not found' }
+          $src = Join-Path $PWD 'azerothcore/env/dist'
+          if (-not (Test-Path $src)) { throw 'AzerothCore install directory azerothcore/env/dist not found' }
           $world = Get-ChildItem -Path $src -Recurse -File -Filter 'worldserver.exe' | Select-Object -First 1
           $auth  = Get-ChildItem -Path $src -Recurse -File -Filter 'authserver.exe' | Select-Object -First 1
           if (-not $world -or -not $auth) { throw 'Compilation did not produce worldserver.exe and authserver.exe' }
@@ -141,10 +162,27 @@ jobs:
           Compiled from: https://github.com/azerothcore/azerothcore-wotlk
           '@ | Set-Content -Path (Join-Path $dest 'READ_ME_FIRST.txt') -Encoding utf8
 
+      - name: Add custom item SQL and Russian setup guide
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $from = Join-Path $PWD 'customization/custom'
+          $to = Join-Path $PWD 'deliver/AzerothCore-Windows-x64/CUSTOM'
+          if (-not (Test-Path $from)) { throw 'Customization files are missing' }
+          New-Item -ItemType Directory -Force -Path $to | Out-Null
+          Copy-Item -Path (Join-Path $from 'custom_items_ruRU.sql') -Destination $to
+          Copy-Item -Path (Join-Path $from 'install_custom_items.cmd') -Destination $to
+          Copy-Item -Path (Join-Path $from 'README_RU.md') -Destination $to
+          @(
+            "Core: $(git -C azerothcore rev-parse HEAD)"
+            "Transmog: $(git -C azerothcore/modules/mod-transmog rev-parse HEAD)"
+            "AH Bot: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
+          ) | Set-Content -Path (Join-Path $to 'VERSIONS.txt') -Encoding utf8
+
       - name: Upload Windows server ZIP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AzerothCore-3.3.5a-Windows-x64
+          name: AzerothCore-3.3.5a-Windows-x64-Custom
           path: deliver/AzerothCore-Windows-x64/
           if-no-files-found: error
           compression-level: 6
