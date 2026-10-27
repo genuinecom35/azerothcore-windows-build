@@ -128,7 +128,339 @@ jobs:
         run: |
           cd azerothcore
           export CTOOLS_BUILD=all
-          ./acore.sh compiler build
+          # On GitHub Windows bash, OSTYPE=cygwin. AzerothCore's compiler
+          # defaults to MySQL installed on the runner (8.0.x) in that case,
+          # but we package the MySQL 8.4.9 DLL. Explicitly pin the SAME
+          # client development headers and .lib that supply the packaged DLL.
+          export CCUSTOMOPTIONS="${CCUSTOMOPTIONS:-} -DMYSQL_INCLUDE_DIR=C:/tools/mysql/current/include -DMYSQL_LIBRARY=C:/tools/mysql/current/lib/mysqlclient.lib"
+          ./acore.sh compiler configure
+
+          # Reject accidentally mixed MySQL development library versions.
+          cache="var/build/obj/CMakeCache.txt"
+          test -f "$cache" || { echo "::error::CMake cache missing"; exit 1; }
+          grep -E '^MYSQL_(INCLUDE_DIR|LIBRARY):' "$cache" || true
+          grep -Eiq '^MYSQL_INCLUDE_DIR:[^=]+=C:/tools/mysql/current/include/?
+      - name: Install compiled binaries and tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $PWD 'azerothcore/var/build/obj'
+          if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
+            throw 'CMake build directory not found'
+          }
+          # The upstream acore.sh script skips its install phase when OSTYPE=cygwin
+          # on GitHub's Windows bash runner, despite successful MSVC compilation.
+          # Explicit installation copies EXEs, extractors and configuration files
+          # from var/build/obj/bin/Release into env/dist.
+          cmake --install $build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
+
+          $dist = Join-Path $PWD 'azerothcore/env/dist'
+          foreach ($exe in @('authserver.exe', 'worldserver.exe')) {
+            $installed = Get-ChildItem -Path $dist -Recurse -File -Filter $exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $installed) { throw "Required $exe missing after CMake install" }
+            Write-Host "Verified installed $exe at $($installed.FullName)"
+          }
+
+      - name: Package compiled binaries, configs and required runtime DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'azerothcore/env/dist'
+          if (-not (Test-Path $src)) { throw 'AzerothCore install directory azerothcore/env/dist not found' }
+          $world = Get-ChildItem -Path $src -Recurse -File -Filter 'worldserver.exe' | Select-Object -First 1
+          $auth  = Get-ChildItem -Path $src -Recurse -File -Filter 'authserver.exe' | Select-Object -First 1
+          if (-not $world -or -not $auth) { throw 'Compilation did not produce worldserver.exe and authserver.exe' }
+
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+          $relativeBin = [System.IO.Path]::GetRelativePath($src, $world.DirectoryName)
+          $destBin = Join-Path $dest $relativeBin
+          New-Item -ItemType Directory -Force -Path $destBin | Out-Null
+          Write-Host "Executable folder: $relativeBin"
+
+          # Always place the 8.4.9 client DLL next to EXEs, replacing any
+          # DLL left by CMake or found in a runner's preinstalled MySQL 8.0.
+          $mysqlDir = 'C:\tools\mysql\current'
+          $mysqlDll = Get-ChildItem -Path $mysqlDir -Recurse -File -Filter 'libmysql.dll' |
+            Select-Object -First 1
+          if (-not $mysqlDll) { throw 'MySQL 8.4.9 libmysql.dll missing from pinned client package' }
+          Copy-Item -LiteralPath $mysqlDll.FullName -Destination (Join-Path $destBin 'libmysql.dll') -Force
+          Write-Host "Bundled pinned MySQL DLL: $($mysqlDll.FullName)"
+          $header = Join-Path $mysqlDir 'include/mysql_version.h'
+          if (-not (Test-Path $header)) { throw 'MySQL version header is missing' }
+          $versionHeader = Get-Content -LiteralPath $header -Raw
+          if ($versionHeader -notmatch '(?m)^\s*#define\s+MYSQL_VERSION_ID\s+80409\b') {
+            throw 'Unexpected MySQL header version. Expected 8.4.9 (80409)'
+          }
+          $info = "MySQL compile-time headers: 8.4.9 (80409)" + [Environment]::NewLine +
+            "MySQL client DLL: $($mysqlDll.FullName)" + [Environment]::NewLine +
+            "MySQL client DLL file version: $($mysqlDll.VersionInfo.FileVersion)"
+          $info | Set-Content -Path (Join-Path $dest 'MYSQL_VERSION.txt') -Encoding utf8
+
+          $runtimeSearchRoots = @($env:OPENSSL_ROOT_DIR)
+          foreach ($dll in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+            if (Test-Path (Join-Path $destBin $dll)) { continue }
+            $found = $null
+            foreach ($root in $runtimeSearchRoots) {
+              if ($root -and (Test-Path $root)) {
+                $found = Get-ChildItem -Path $root -Recurse -File -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { break }
+              }
+            }
+            if ($found) {
+              Copy-Item -Path $found.FullName -Destination (Join-Path $destBin $dll) -Force
+              Write-Host "Bundled $dll"
+            } else {
+              Write-Warning "$dll not found on runner. It may be required on the target Windows PC."
+            }
+          }
+
+          @'
+          AZEROTHCORE 3.3.5a - WINDOWS SERVER BUILD
+
+          This artifact was compiled on the Windows GitHub Actions runner.
+          It contains server binaries, configs and extractor tools generated by the AzerothCore build.
+          It does NOT include a WoW game client, MySQL server, database contents or extracted maps.
+
+          1) Install and run MySQL 8.4 locally (or configure a compatible remote DB).
+          2) Copy *.conf.dist to *.conf (where applicable) and set correct DB credentials.
+          3) Initialize AzerothCore auth/characters/world databases according to the official instructions.
+          4) Extract maps/vmaps/mmaps/dbc from your own WoW 3.3.5a client with bundled extractors.
+          5) Put extracted data where worldserver expects it; start authserver.exe then worldserver.exe.
+          6) Use the WoW 3.3.5a client's realmlist set to the server address.
+
+          Official install documentation: https://www.azerothcore.org/wiki/installation
+          Compiled from: https://github.com/azerothcore/azerothcore-wotlk
+          '@ | Set-Content -Path (Join-Path $dest 'READ_ME_FIRST.txt') -Encoding utf8
+
+      - name: Add custom item SQL and Russian setup guide
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $from = Join-Path $PWD 'customization/custom'
+          $to = Join-Path $PWD 'deliver/AzerothCore-Windows-x64/CUSTOM'
+          if (-not (Test-Path $from)) { throw 'Customization files are missing' }
+          New-Item -ItemType Directory -Force -Path $to | Out-Null
+          Copy-Item -Path (Join-Path $from 'custom_items_ruRU.sql') -Destination $to
+          Copy-Item -Path (Join-Path $from 'install_custom_items.cmd') -Destination $to
+          Copy-Item -Path (Join-Path $from 'README_RU.md') -Destination $to
+          @(
+            "Core: $(git -C azerothcore rev-parse HEAD)"
+            "Transmog: $(git -C azerothcore/modules/mod-transmog rev-parse HEAD)"
+            "AH Bot: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
+          ) | Set-Content -Path (Join-Path $to 'VERSIONS.txt') -Encoding utf8
+
+      - name: Package first-run Windows setup and SQL database sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          $setup = Join-Path $PWD 'customization/setup'
+          $sourceSql = Join-Path $PWD 'azerothcore/data/sql'
+          $sqlTarget = Join-Path $dest 'SQL_SOURCE/data/sql'
+          $custom = Join-Path $dest 'CUSTOM'
+
+          if (-not (Test-Path (Join-Path $setup 'SETUP_SERVER.ps1'))) {
+            throw 'Setup scripts missing from customization repository'
+          }
+          if (-not (Test-Path (Join-Path $sourceSql 'base/db_world'))) {
+            throw 'AzerothCore base SQL directory missing'
+          }
+          New-Item -ItemType Directory -Force -Path $sqlTarget | Out-Null
+          Copy-Item -Path (Join-Path $sourceSql '*') -Destination $sqlTarget -Recurse -Force
+          if (-not (Test-Path (Join-Path $sqlTarget 'base/db_world'))) {
+            throw 'SQL source copy failed'
+          }
+
+          $entrypoints = @(
+            'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
+            'START_SERVER.cmd', 'START_AUTH.cmd', 'START_WORLD.cmd',
+            'DIAGNOSTICS.ps1', 'DIAGNOSTICS.cmd', 'PREPARE_EXTRACTORS.cmd',
+            'README_RU.txt'
+          )
+          foreach ($file in $entrypoints) {
+            $from = Join-Path $setup $file
+            if (-not (Test-Path $from)) { throw "Missing setup file: $file" }
+            Copy-Item -LiteralPath $from -Destination (Join-Path $dest $file) -Force
+          }
+
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.ps1') -Destination $custom -Force
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.cmd') -Destination $custom -Force
+
+          $extractor = Join-Path $PWD 'azerothcore/apps/extractor/extractor.bat'
+          if (-not (Test-Path $extractor)) { throw 'Official extractor.bat missing from source' }
+          Copy-Item -LiteralPath $extractor -Destination (Join-Path $dest 'extractor.bat') -Force
+
+          New-Item -ItemType Directory -Force -Path (Join-Path $dest 'Data') | Out-Null
+          Write-Host 'Included SQL base/updates, first-run setup, extractors, and custom items.'
+          Get-ChildItem $dest -Name
+
+      - name: Upload Windows server ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzerothCore-3.3.5a-Windows-x64-Custom
+          path: deliver/AzerothCore-Windows-x64/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
+ "$cache" || {
+            echo "::error::MySQL 8.4.9 headers were not selected by CMake"; exit 1;
+          }
+          grep -Eiq '^MYSQL_LIBRARY:[^=]+=C:/tools/mysql/current/lib/mysqlclient.lib
+      - name: Install compiled binaries and tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $build = Join-Path $PWD 'azerothcore/var/build/obj'
+          if (-not (Test-Path (Join-Path $build 'CMakeCache.txt'))) {
+            throw 'CMake build directory not found'
+          }
+          # The upstream acore.sh script skips its install phase when OSTYPE=cygwin
+          # on GitHub's Windows bash runner, despite successful MSVC compilation.
+          # Explicit installation copies EXEs, extractors and configuration files
+          # from var/build/obj/bin/Release into env/dist.
+          cmake --install $build --config Release
+          if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
+
+          $dist = Join-Path $PWD 'azerothcore/env/dist'
+          foreach ($exe in @('authserver.exe', 'worldserver.exe')) {
+            $installed = Get-ChildItem -Path $dist -Recurse -File -Filter $exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if (-not $installed) { throw "Required $exe missing after CMake install" }
+            Write-Host "Verified installed $exe at $($installed.FullName)"
+          }
+
+      - name: Package compiled binaries, configs and required runtime DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $src = Join-Path $PWD 'azerothcore/env/dist'
+          if (-not (Test-Path $src)) { throw 'AzerothCore install directory azerothcore/env/dist not found' }
+          $world = Get-ChildItem -Path $src -Recurse -File -Filter 'worldserver.exe' | Select-Object -First 1
+          $auth  = Get-ChildItem -Path $src -Recurse -File -Filter 'authserver.exe' | Select-Object -First 1
+          if (-not $world -or -not $auth) { throw 'Compilation did not produce worldserver.exe and authserver.exe' }
+
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force
+          $relativeBin = [System.IO.Path]::GetRelativePath($src, $world.DirectoryName)
+          $destBin = Join-Path $dest $relativeBin
+          New-Item -ItemType Directory -Force -Path $destBin | Out-Null
+          Write-Host "Executable folder: $relativeBin"
+
+          $runtimeSearchRoots = @('C:\tools\mysql\current', $env:OPENSSL_ROOT_DIR)
+          foreach ($dll in @('libmysql.dll','libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+            if (Test-Path (Join-Path $destBin $dll)) { continue }
+            $found = $null
+            foreach ($root in $runtimeSearchRoots) {
+              if ($root -and (Test-Path $root)) {
+                $found = Get-ChildItem -Path $root -Recurse -File -Filter $dll -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($found) { break }
+              }
+            }
+            if ($found) {
+              Copy-Item -Path $found.FullName -Destination (Join-Path $destBin $dll) -Force
+              Write-Host "Bundled $dll"
+            } else {
+              Write-Warning "$dll not found on runner. It may be required on the target Windows PC."
+            }
+          }
+
+          @'
+          AZEROTHCORE 3.3.5a - WINDOWS SERVER BUILD
+
+          This artifact was compiled on the Windows GitHub Actions runner.
+          It contains server binaries, configs and extractor tools generated by the AzerothCore build.
+          It does NOT include a WoW game client, MySQL server, database contents or extracted maps.
+
+          1) Install and run MySQL 8.4 locally (or configure a compatible remote DB).
+          2) Copy *.conf.dist to *.conf (where applicable) and set correct DB credentials.
+          3) Initialize AzerothCore auth/characters/world databases according to the official instructions.
+          4) Extract maps/vmaps/mmaps/dbc from your own WoW 3.3.5a client with bundled extractors.
+          5) Put extracted data where worldserver expects it; start authserver.exe then worldserver.exe.
+          6) Use the WoW 3.3.5a client's realmlist set to the server address.
+
+          Official install documentation: https://www.azerothcore.org/wiki/installation
+          Compiled from: https://github.com/azerothcore/azerothcore-wotlk
+          '@ | Set-Content -Path (Join-Path $dest 'READ_ME_FIRST.txt') -Encoding utf8
+
+      - name: Add custom item SQL and Russian setup guide
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $from = Join-Path $PWD 'customization/custom'
+          $to = Join-Path $PWD 'deliver/AzerothCore-Windows-x64/CUSTOM'
+          if (-not (Test-Path $from)) { throw 'Customization files are missing' }
+          New-Item -ItemType Directory -Force -Path $to | Out-Null
+          Copy-Item -Path (Join-Path $from 'custom_items_ruRU.sql') -Destination $to
+          Copy-Item -Path (Join-Path $from 'install_custom_items.cmd') -Destination $to
+          Copy-Item -Path (Join-Path $from 'README_RU.md') -Destination $to
+          @(
+            "Core: $(git -C azerothcore rev-parse HEAD)"
+            "Transmog: $(git -C azerothcore/modules/mod-transmog rev-parse HEAD)"
+            "AH Bot: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
+          ) | Set-Content -Path (Join-Path $to 'VERSIONS.txt') -Encoding utf8
+
+      - name: Package first-run Windows setup and SQL database sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dest = Join-Path $PWD 'deliver/AzerothCore-Windows-x64'
+          $setup = Join-Path $PWD 'customization/setup'
+          $sourceSql = Join-Path $PWD 'azerothcore/data/sql'
+          $sqlTarget = Join-Path $dest 'SQL_SOURCE/data/sql'
+          $custom = Join-Path $dest 'CUSTOM'
+
+          if (-not (Test-Path (Join-Path $setup 'SETUP_SERVER.ps1'))) {
+            throw 'Setup scripts missing from customization repository'
+          }
+          if (-not (Test-Path (Join-Path $sourceSql 'base/db_world'))) {
+            throw 'AzerothCore base SQL directory missing'
+          }
+          New-Item -ItemType Directory -Force -Path $sqlTarget | Out-Null
+          Copy-Item -Path (Join-Path $sourceSql '*') -Destination $sqlTarget -Recurse -Force
+          if (-not (Test-Path (Join-Path $sqlTarget 'base/db_world'))) {
+            throw 'SQL source copy failed'
+          }
+
+          $entrypoints = @(
+            'SETUP_SERVER.ps1', 'SETUP_SERVER.cmd',
+            'START_SERVER.cmd', 'START_AUTH.cmd', 'START_WORLD.cmd',
+            'DIAGNOSTICS.ps1', 'DIAGNOSTICS.cmd', 'PREPARE_EXTRACTORS.cmd',
+            'README_RU.txt'
+          )
+          foreach ($file in $entrypoints) {
+            $from = Join-Path $setup $file
+            if (-not (Test-Path $from)) { throw "Missing setup file: $file" }
+            Copy-Item -LiteralPath $from -Destination (Join-Path $dest $file) -Force
+          }
+
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.ps1') -Destination $custom -Force
+          Copy-Item -Path (Join-Path $setup 'APPLY_CUSTOM_ITEMS.cmd') -Destination $custom -Force
+
+          $extractor = Join-Path $PWD 'azerothcore/apps/extractor/extractor.bat'
+          if (-not (Test-Path $extractor)) { throw 'Official extractor.bat missing from source' }
+          Copy-Item -LiteralPath $extractor -Destination (Join-Path $dest 'extractor.bat') -Force
+
+          New-Item -ItemType Directory -Force -Path (Join-Path $dest 'Data') | Out-Null
+          Write-Host 'Included SQL base/updates, first-run setup, extractors, and custom items.'
+          Get-ChildItem $dest -Name
+
+      - name: Upload Windows server ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AzerothCore-3.3.5a-Windows-x64-Custom
+          path: deliver/AzerothCore-Windows-x64/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
+ "$cache" || {
+            echo "::error::MySQL 8.4.9 import library was not selected by CMake"; exit 1;
+          }
+          ./acore.sh compiler compile
 
       - name: Install compiled binaries and tools
         shell: pwsh
