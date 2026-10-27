@@ -123,23 +123,39 @@ jobs:
           Write-Host "Transmog revision: $(git -C azerothcore/modules/mod-transmog rev-parse HEAD)"
           Write-Host "AH Bot revision: $(git -C azerothcore/modules/mod-ah-bot rev-parse HEAD)"
 
+      - name: Configure AzerothCore using MySQL 8.4.9 headers and library
+        shell: bash
+        run: |
+          cd azerothcore
+          export CTOOLS_BUILD=all
+          export CCUSTOMOPTIONS='-DMYSQL_INCLUDE_DIR=C:/tools/mysql/current/include -DMYSQL_LIBRARY=C:/tools/mysql/current/lib/mysqlclient.lib'
+          ./acore.sh compiler configure
+
+      - name: Verify matching MySQL development files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $PWD 'azerothcore/var/build/obj/CMakeCache.txt'
+          if (-not (Test-Path $cache)) { throw 'Missing CMakeCache.txt' }
+          $lines = Get-Content -LiteralPath $cache
+          $include = $lines | Where-Object { $_ -match '^MYSQL_INCLUDE_DIR:' } | Select-Object -First 1
+          $library = $lines | Where-Object { $_ -match '^MYSQL_LIBRARY:' } | Select-Object -First 1
+          Write-Host "Selected MySQL include: $include"
+          Write-Host "Selected MySQL import library: $library"
+          if (-not $include -or -not $include.ToLowerInvariant().Contains('c:/tools/mysql/current/include')) {
+            throw 'MySQL headers do not match the packaged MySQL 8.4.9 DLL'
+          }
+          if (-not $library -or -not $library.ToLowerInvariant().Contains('c:/tools/mysql/current/lib/mysqlclient.lib')) {
+            throw 'MySQL import library does not match the packaged MySQL 8.4.9 DLL'
+          }
+
       - name: Compile AzerothCore, modules and extractors
         shell: bash
         run: |
           cd azerothcore
           export CTOOLS_BUILD=all
-          # On GitHub Windows bash, OSTYPE=cygwin. AzerothCore's compiler
-          # defaults to MySQL installed on the runner (8.0.x) in that case,
-          # but we package the MySQL 8.4.9 DLL. Explicitly pin the SAME
-          # client development headers and .lib that supply the packaged DLL.
-          export CCUSTOMOPTIONS="${CCUSTOMOPTIONS:-} -DMYSQL_INCLUDE_DIR=C:/tools/mysql/current/include -DMYSQL_LIBRARY=C:/tools/mysql/current/lib/mysqlclient.lib"
-          ./acore.sh compiler configure
+          ./acore.sh compiler compile
 
-          # Reject accidentally mixed MySQL development library versions.
-          cache="var/build/obj/CMakeCache.txt"
-          test -f "$cache" || { echo "::error::CMake cache missing"; exit 1; }
-          grep -E '^MYSQL_(INCLUDE_DIR|LIBRARY):' "$cache" || true
-          grep -Eiq '^MYSQL_INCLUDE_DIR:[^=]+=C:/tools/mysql/current/include/?
       - name: Install compiled binaries and tools
         shell: pwsh
         run: |
