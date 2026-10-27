@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/azerothcore-windows.yml'
       - 'custom/**'
+      - 'setup/**'
 
 permissions:
   contents: read
@@ -35,6 +36,27 @@ jobs:
           submodules: recursive
           persist-credentials: false
           fetch-depth: 1
+
+      - name: Validate Windows setup PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scriptDir = Join-Path $PWD 'customization/setup'
+          $scripts = @('SETUP_SERVER.ps1', 'DIAGNOSTICS.ps1', 'APPLY_CUSTOM_ITEMS.ps1')
+          foreach ($name in $scripts) {
+            $file = Join-Path $scriptDir $name
+            if (-not (Test-Path $file)) { throw "Missing setup script $name" }
+            $tokens = $null
+            $errorsFound = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file, [ref]$tokens, [ref]$errorsFound
+            ) | Out-Null
+            if ($errorsFound.Count -gt 0) {
+              $errorsFound | ForEach-Object { Write-Host $_ }
+              throw "PowerShell syntax errors in $name"
+            }
+            Write-Host "Validated $name"
+          }
 
       - name: Cache Boost and MySQL
         uses: actions/cache@v4
