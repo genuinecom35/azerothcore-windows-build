@@ -59,8 +59,8 @@ INSERT IGNORE INTO `creature_template_locale`
 SELECT `entry`,'ruRU',`name_ru`,`subname_ru` FROM `tmp_acore_altershop`;
 
 -- T1/T2: verified classic class item-set IDs 201..218.
--- T6: level-70 raid set pieces by item level (140..164), so also includes
--- other BC set pieces in this range; exact original old fan-patch cannot be reused.
+-- T6: precise BC raid set IDs 668..684 (17 original tier-six class sets).
+-- The original old fan-server patch is NOT installed; this uses AzerothCore data.
 -- T9/T10: wrath level-80 set pieces at their tier item levels and armor class.
 -- Split cloth/leather/mail/plate to keep each shop under the vendor page limit.
 -- Retail class restrictions and vendor buy prices are kept intact.
@@ -74,7 +74,7 @@ FROM (
  JOIN `item_template` i ON
     (v.`tier`=1 AND i.`ItemSet` BETWEEN 201 AND 209)
  OR (v.`tier`=2 AND i.`ItemSet` BETWEEN 210 AND 218)
- OR (v.`tier`=3 AND i.`ItemSet` > 0 AND i.`RequiredLevel`=70 AND i.`ItemLevel` BETWEEN 140 AND 164 AND i.`class`=4)
+ OR (v.`tier`=3 AND i.`ItemSet` BETWEEN 668 AND 684)
  OR (v.`tier`=9 AND i.`ItemSet`>0 AND i.`RequiredLevel`=80 AND i.`ItemLevel` IN (232,245,258) AND i.`class`=4 AND i.`subclass`=v.`armor_type`)
  OR (v.`tier`=10 AND i.`ItemSet`>0 AND i.`RequiredLevel`=80 AND i.`ItemLevel` IN (251,264,277) AND i.`class`=4 AND i.`subclass`=v.`armor_type`)
 ) ranked
