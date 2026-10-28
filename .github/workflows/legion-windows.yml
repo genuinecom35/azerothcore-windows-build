@@ -51,6 +51,26 @@ jobs:
             Write-Host "Windows PowerShell 5.1 accepts $Name"
           }
 
+      - name: Fix upstream SQL hard-coded hotfix schema name
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Path = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_07_06_violet_hold_millhouse_texts.sql'
+          if (-not (Test-Path -LiteralPath $Path)) { throw 'Expected LegionCore Violet Hold world update is missing.' }
+          $Sql = [IO.File]::ReadAllText($Path)
+          $Old = '`hotfixes_legion`.`broadcast_text`'
+          $New = '`legion735_hotfixes`.`broadcast_text`'
+          if ($Sql.Contains($Old)) {
+            [IO.File]::WriteAllText($Path, $Sql.Replace($Old, $New), [System.Text.UTF8Encoding]::new($false))
+            Write-Host 'Repointed Violet Hold update to the dedicated Legion hotfix database.'
+          }
+          elseif ($Sql.Contains($New)) {
+            Write-Host 'Violet Hold update already targets Legion hotfix database.'
+          }
+          else {
+            throw 'Unexpected Violet Hold world SQL content; refusing unsafe replacement.'
+          }
+
       - name: Restore missing Spell timer accessor in upstream LegionCore
         shell: pwsh
         run: |
