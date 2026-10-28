@@ -132,15 +132,15 @@ def render_sql(groups: dict[str, list[int]]) -> tuple[str, list[dict]]:
         "CREATE TEMPORARY TABLE _atlas_vendor_wdb SELECT * FROM creature_template_wdb WHERE Entry = {} LIMIT 0;".format(VENDOR_TEMPLATE),
         "",
     ]
-    # Compact 14-column showroom around the landmark. All NPCs at ground height;
+    # Compact 20-column showroom around the landmark. All NPCs at ground height;
     # verify positions during live in-game testing on this particular client map.
-    columns = 14
+    columns = 20
     for index, shop in enumerate(shops):
         entry = shop["entry"]
         page = shop["page"]
         name = escape_sql("AtlasLoot {} {:02d}".format(shop["label"], page))
-        x = 16201.75 + (index % columns) * 3.14
-        y = 16230.75 + (index // columns) * 3.14
+        x = 16196.00 + (index % columns) * 2.70
+        y = 16227.50 + (index // columns) * 2.70
         z = 12.62
         guid = GUID_START + index
         lines.extend([
