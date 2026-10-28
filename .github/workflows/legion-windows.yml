@@ -265,6 +265,13 @@ jobs:
           New-Item -ItemType Directory -Path $Dist -Force | Out-Null
           Copy-Item -Path (Join-Path $Bin '*') -Destination $Dist -Recurse -Force
           Copy-Item (Join-Path $Workspace 'legion-src/src/server/bnetserver/bnetserver.conf.dist') $Dist
+          # Ninja builds do not execute bnetserver's MSBuild-only post-build copy of the SSL files.
+          # This LegionCore client stack expects the original matching certificate and key pair.
+          foreach ($SslFile in @('bnetserver.cert.pem', 'bnetserver.key.pem')) {
+            $SslSource = Join-Path $Workspace ("legion-src/src/server/bnetserver/" + $SslFile)
+            if (-not (Test-Path -LiteralPath $SslSource -PathType Leaf)) { throw "Missing upstream Battle.net SSL file: $SslFile" }
+            Copy-Item -LiteralPath $SslSource -Destination $Dist -Force
+          }
           Copy-Item (Join-Path $Workspace 'legion-src/src/server/worldserver/worldserver.conf.dist') $Dist
           Copy-Item (Join-Path $Workspace 'legion-src/sql') (Join-Path $Dist 'sql') -Recurse -Force
           $Scripts = Join-Path $Workspace 'package/legion'
@@ -289,6 +296,12 @@ jobs:
           if (-not (Test-Path (Join-Path $Dist 'sql/base/world/world_database_01.sql'))) { throw 'World SQL base missing.' }
           if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_28_90_atlasmall.sql'))) { throw 'AtlasMall custom SQL missing.' }
           if (-not (Test-Path (Join-Path $Dist 'ATLASMALL_MANIFEST.json'))) { throw 'AtlasMall manifest missing.' }
+          foreach ($SslFile in @('bnetserver.cert.pem', 'bnetserver.key.pem')) {
+            $Path = Join-Path $Dist $SslFile
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -lt 1000) {
+              throw "Battle.net SSL file missing/empty in final artifact: $SslFile"
+            }
+          }
 
       - uses: actions/upload-artifact@v4
         with:
