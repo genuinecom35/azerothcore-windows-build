@@ -9,15 +9,22 @@ if ($Cpp.Contains('HandleMallCommand')) {
     exit 0
 }
 
-# Match a single top-level command entry; do not replace nested .tele subcommands.
-$Pattern = '(?m)^([ \t]*)\{\s*"tele"\s*,\s*SEC_MODERATOR[^\r\n]*$'
-$Match = [regex]::Match($Cpp, $Pattern)
-if (-not $Match.Success) {
-    throw 'Could not identify the top-level .tele command in cs_tele.cpp; refusing unsafe patch.'
+# Change only the literal top-level command registration, not any tele subcommands.
+$Needle = '{ "tele",'
+$At = $Cpp.IndexOf($Needle, [System.StringComparison]::Ordinal)
+if ($At -lt 0) {
+    throw 'Cannot find .tele command registration in cs_tele.cpp.'
 }
-$Prefix = $Match.Groups[1].Value
+$LineStart = $Cpp.LastIndexOf([char]10, $At) + 1
+$LineEnd = $Cpp.IndexOf([char]10, $At)
+if ($LineEnd -lt 0) { $LineEnd = $Cpp.Length }
+$Line = $Cpp.Substring($LineStart, $LineEnd - $LineStart)
+if (-not ($Line.Contains('SEC_MODERATOR') -and $Line.Contains('teleCommandTable'))) {
+    throw 'Found .tele but its registration no longer matches expected security/subcommands.'
+}
+$Prefix = $Line.Substring(0, $Line.IndexOf('{'))
 $NewCommand = $Prefix + '{ "mall", SEC_MODERATOR, false, &HandleMallCommand, "" },' + [Environment]::NewLine
-$Cpp = $Cpp.Insert($Match.Index, $NewCommand)
+$Cpp = $Cpp.Insert($LineStart, $NewCommand)
 
 $Anchor = '    static bool HandleTeleCommand(ChatHandler* handler, const char* args)'
 if (-not $Cpp.Contains($Anchor)) {
