@@ -13,11 +13,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 360
     env:
       CMAKE_BUILD_TYPE: RelWithDebInfo
-      MYSQL_ROOT_DIR: C:/Program Files/MySQL/MySQL Server 8.0
+      MYSQL_ROOT_DIR: C:/tools/mysql/current
+      BOOST_ROOT: C:/local/boost_1_84_0
       OPENSSL_ROOT_DIR: C:/libs/openssl
     steps:
       - uses: actions/checkout@v4
@@ -57,13 +58,62 @@ jobs:
           Start-Process -Wait -FilePath $Installer -ArgumentList @('/SILENT','/SP-','/SUPPRESSMSGBOXES',('/DIR=' + $env:OPENSSL_ROOT_DIR))
           if (-not (Test-Path "$env:OPENSSL_ROOT_DIR/bin/libssl-3-x64.dll")) { throw 'OpenSSL install check failed.' }
 
-      - uses: MarkusJx/install-boost@v2.4.5
-        id: install-boost
+      - name: Cache Boost and MySQL
+        uses: actions/cache@v4
         with:
-          boost_version: 1.84.0
-          link: static
-          platform_version: 2022
-          toolset: msvc
+          path: |
+            C:/local/boost_1_84_0
+            C:/tools/mysql/current
+          key: legion735-windows-boost184-msvc143-mysql849-v1
+
+      - name: Install Boost 1.84 precompiled binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $BoostRoot = $env:BOOST_ROOT
+          if (-not (Test-Path (Join-Path $BoostRoot 'boost/version.hpp')) -or -not (Test-Path (Join-Path $BoostRoot 'lib64-msvc-14.3'))) {
+            $Url = 'https://downloads.sourceforge.net/project/boost/boost-binaries/1.84.0/boost_1_84_0-msvc-14.3-64.exe'
+            $Exe = Join-Path $env:RUNNER_TEMP 'boost184-msvc143.exe'
+            $Ok = $false
+            for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+              try {
+                Invoke-WebRequest -Uri $Url -OutFile $Exe -UserAgent 'legion735-ci' -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60
+                if ((Get-Item $Exe).Length -lt 150MB) { throw 'Boost installer was unexpectedly small' }
+                $Ok = $true
+                break
+              } catch {
+                Write-Warning "Boost download attempt $Attempt failed: $_"
+                if ($Attempt -lt 3) { Start-Sleep -Seconds 10 }
+              }
+            }
+            if (-not $Ok) { throw 'Could not download official Boost 1.84 prebuilt installer' }
+            $Proc = Start-Process -FilePath $Exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:/local/boost_1_84_0') -PassThru -Wait
+            if ($Proc.ExitCode -ne 0) { throw "Boost installer exited with code $($Proc.ExitCode)" }
+          }
+          if (-not (Test-Path (Join-Path $BoostRoot 'boost/version.hpp'))) { throw 'Boost 1.84 headers missing' }
+          if (-not (Test-Path (Join-Path $BoostRoot 'lib64-msvc-14.3'))) { throw 'Boost msvc-14.3 libraries missing' }
+          Write-Host "Boost 1.84.0 is installed: $BoostRoot"
+
+      - name: Install pinned MySQL 8.4 development client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $MySQL = $env:MYSQL_ROOT_DIR
+          if (-not (Test-Path (Join-Path $MySQL 'lib/mysqlclient.lib'))) {
+            $Zip = Join-Path $env:RUNNER_TEMP 'mysql-8.4.9-win64.zip'
+            Invoke-WebRequest -Uri 'https://cdn.mysql.com/archives/mysql-8.4/mysql-8.4.9-winx64.zip' -OutFile $Zip -UserAgent 'Mozilla/5.0'
+            if ((Get-Item $Zip).Length -lt 50MB) { throw 'MySQL archive was unexpectedly small' }
+            New-Item -ItemType Directory -Path 'C:/tools/mysql' -Force | Out-Null
+            Expand-Archive -Path $Zip -DestinationPath 'C:/tools/mysql' -Force
+            if (Test-Path $MySQL) { Remove-Item -LiteralPath $MySQL -Recurse -Force }
+            Rename-Item -LiteralPath 'C:/tools/mysql/mysql-8.4.9-winx64' -NewName 'current'
+          }
+          foreach ($Rel in @('include/mysql.h','lib/mysqlclient.lib','lib/libmysql.dll','bin/mysql.exe')) {
+            if (-not (Test-Path (Join-Path $MySQL $Rel))) { throw "MySQL prerequisite missing: $Rel" }
+          }
+          Write-Host "MySQL 8.4.9 client found at: $MySQL"
 
       - uses: egor-tensin/vs-shell@v2
         with:
@@ -73,15 +123,14 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path "$env:MYSQL_ROOT_DIR/lib/libmysql.dll")) { throw "MySQL client DLL not found at $env:MYSQL_ROOT_DIR" }
+          if (-not (Test-Path "$env:BOOST_ROOT/lib64-msvc-14.3")) { throw 'Boost precompiled libraries not found' }
           cmake --version
           ninja --version
 
       - name: Configure
         shell: pwsh
-        env:
-          BOOST_ROOT: ${{ steps.install-boost.outputs.BOOST_ROOT }}
         run: |
-          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DTOOLS=ON
+          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DTOOLS=ON -DBOOST_ROOT="$env:BOOST_ROOT" -DMYSQL_ROOT_DIR="$env:MYSQL_ROOT_DIR" -DMYSQL_INCLUDE_DIR="$env:MYSQL_ROOT_DIR/include" -DMYSQL_LIBRARY="$env:MYSQL_ROOT_DIR/lib/mysqlclient.lib" -DMYSQL_EXECUTABLE="$env:MYSQL_ROOT_DIR/bin/mysql.exe"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
 
       - name: Compile
