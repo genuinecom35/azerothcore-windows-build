@@ -141,6 +141,7 @@ FLUSH PRIVILEGES;
     $World = Set-QuotedConfigValue $World 'SourceDirectory' '.'
     $World = Set-QuotedConfigValue $World 'MySQLExecutable' $MysqlConfigPath
     $World = Set-RawConfigValue $World 'MaxPlayerLevel' '110'
+    $World = Set-RawConfigValue $World 'DBC.Locale' '8'
     $World = Set-RawConfigValue $World 'Rate.XP.Kill' '1'
     $World = Set-RawConfigValue $World 'Rate.XP.Quest' '1'
     $World = Set-RawConfigValue $World 'Rate.XP.Explore' '1'
