@@ -130,7 +130,7 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" -DCMAKE_BUILD_TYPE=$env:CMAKE_BUILD_TYPE -DTOOLS=ON -DBOOST_ROOT="$env:BOOST_ROOT" -DMYSQL_ROOT_DIR="$env:MYSQL_ROOT_DIR" -DMYSQL_INCLUDE_DIR="$env:MYSQL_ROOT_DIR/include" -DMYSQL_LIBRARY="$env:MYSQL_ROOT_DIR/lib/mysqlclient.lib" -DMYSQL_EXECUTABLE="$env:MYSQL_ROOT_DIR/bin/mysql.exe"
+          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" "-DCMAKE_BUILD_TYPE=$($env:CMAKE_BUILD_TYPE)" -DTOOLS=ON -DBOOST_ROOT="$env:BOOST_ROOT" -DMYSQL_ROOT_DIR="$env:MYSQL_ROOT_DIR" -DMYSQL_INCLUDE_DIR="$env:MYSQL_ROOT_DIR/include" -DMYSQL_LIBRARY="$env:MYSQL_ROOT_DIR/lib/mysqlclient.lib" -DMYSQL_EXECUTABLE="$env:MYSQL_ROOT_DIR/bin/mysql.exe"
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
 
       - name: Compile
