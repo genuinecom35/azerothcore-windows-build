@@ -31,6 +31,26 @@ jobs:
           ref: main
           path: legion-src
 
+      - name: Validate end-user scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($Name in @('SETUP_DATABASE.ps1', 'EXTRACT_CLIENT_DATA.ps1')) {
+            $File = Join-Path $env:GITHUB_WORKSPACE ("package/legion/" + $Name)
+            $Bytes = [System.IO.File]::ReadAllBytes($File)
+            if ($Bytes.Length -lt 3 -or $Bytes[0] -ne 239 -or $Bytes[1] -ne 187 -or $Bytes[2] -ne 191) {
+              throw "$Name must be saved as UTF-8 with BOM for Windows PowerShell 5.1"
+            }
+            $Tokens = $null
+            $Errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null
+            if ($Errors.Count -gt 0) {
+              $Errors | ForEach-Object { Write-Host $_.Message }
+              throw "$Name has PowerShell 5.1 syntax errors"
+            }
+            Write-Host "Windows PowerShell 5.1 accepts $Name"
+          }
+
       - name: Restore missing Spell timer accessor in upstream LegionCore
         shell: pwsh
         run: |
