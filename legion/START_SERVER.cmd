@@ -12,6 +12,18 @@ if not exist "worldserver.conf" (
   pause
   exit /b 1
 )
+if not exist "bnetserver.cert.pem" (
+  echo Missing bnetserver.cert.pem. Battle.net authentication will not start.
+  echo Restore original upstream SSL certificate from LegionCore-Reforged.
+  pause
+  exit /b 1
+)
+if not exist "bnetserver.key.pem" (
+  echo Missing bnetserver.key.pem. Battle.net authentication will not start.
+  echo Restore original upstream SSL key from LegionCore-Reforged.
+  pause
+  exit /b 1
+)
 if not exist "ClientData\maps" (
   echo Missing ClientData\maps. Run EXTRACT_CLIENT_DATA.cmd first.
   pause
