@@ -171,16 +171,27 @@ def test_parser() -> None:
     text = '''
 data["Starter"] = {
   ContentType = DUNGEON_CONTENT,
-  items = { { [NORMAL_DIFF] = {
-    { 1, 137403 }, -- gear
-    { 2, "ac123" }, -- achievement not an item
-    -- { 3, 999001 }, -- excluded
-  } }, },
+  items = {
+    {
+      [NORMAL_DIFF] = {
+        { 1, 137403 }, -- gear
+        { 2, "ac123" }, -- achievement not an item
+        -- { 3, 999001 }, -- excluded
+      },
+    },
+  },
 }
 --[[ data["Old"] = { ContentType = RAID_CONTENT, items = { { 1, 12345 }, }, } ]]
 data["Raid"] = {
   ContentType = RAID_CONTENT,
-  items = { { [NORMAL_DIFF] = { { 1, 140001 }, { 2, 140001 }, }, }, },
+  items = {
+    {
+      [NORMAL_DIFF] = {
+        { 1, 140001 },
+        { 2, 140001 },
+      },
+    },
+  },
 }'''
     groups = extract_sections(text, "Legion")
     assert groups["Legion подземелья"] == [137403], groups
