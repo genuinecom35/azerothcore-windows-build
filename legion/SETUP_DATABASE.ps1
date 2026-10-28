@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $SqlRoot = Join-Path $Root 'sql'
@@ -54,7 +54,7 @@ $Completed = $false
 function Set-QuotedConfigValue([string]$Text, [string]$Key, [string]$Value) {
     $Pattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
     $Replacement = $Key + ' = "' + $Value + '"'
-    $Updated = [regex]::Replace($Text, $Pattern, $Replacement, 1)
+    $Updated = ([regex]::new($Pattern)).Replace($Text, $Replacement, 1)
     if ($Updated -eq $Text) { throw "Не найден параметр $Key в конфигурации." }
     return $Updated
 }
@@ -62,7 +62,7 @@ function Set-QuotedConfigValue([string]$Text, [string]$Key, [string]$Value) {
 function Set-RawConfigValue([string]$Text, [string]$Key, [string]$Value) {
     $Pattern = '(?m)^\s*' + [regex]::Escape($Key) + '\s*=.*$'
     $Replacement = $Key + ' = ' + $Value
-    $Updated = [regex]::Replace($Text, $Pattern, $Replacement, 1)
+    $Updated = ([regex]::new($Pattern)).Replace($Text, $Replacement, 1)
     if ($Updated -eq $Text) { throw "Не найден параметр $Key в конфигурации." }
     return $Updated
 }
