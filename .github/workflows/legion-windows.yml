@@ -52,6 +52,27 @@ jobs:
             Write-Host 'Upstream Spell.h already has GetRemainingCastTime(); patch not needed.'
           }
 
+      - name: Register GM-only AtlasMall teleport command
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE/package/legion/patch_gmisland_command.ps1"
+          if ($LASTEXITCODE -ne 0) { throw 'GM Island teleport patch failed' }
+
+      - name: Generate AtlasLoot Enhanced vendors on GM Island
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Generator = Join-Path $env:GITHUB_WORKSPACE 'package/legion/build_atlasmall.py'
+          python -m py_compile $Generator
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall generator syntax check failed' }
+          python $Generator --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall generator self-test failed' }
+          $SqlPath = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_28_90_atlasmall.sql'
+          $ManifestPath = Join-Path $env:GITHUB_WORKSPACE 'package/legion/ATLASMALL_MANIFEST.json'
+          python $Generator --output $SqlPath --manifest $ManifestPath
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall SQL generation failed' }
+          if (-not (Test-Path $SqlPath) -or -not (Test-Path $ManifestPath)) { throw 'AtlasMall outputs missing' }
+
       - name: Get OpenSSL installer metadata
         id: openssl-info
         shell: pwsh
@@ -187,7 +208,7 @@ jobs:
           Copy-Item (Join-Path $Workspace 'legion-src/src/server/worldserver/worldserver.conf.dist') $Dist
           Copy-Item (Join-Path $Workspace 'legion-src/sql') (Join-Path $Dist 'sql') -Recurse -Force
           $Scripts = Join-Path $Workspace 'package/legion'
-          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','README_RU.md')) {
+          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','README_RU.md','ALTERSHOP_README_RU.md','ATLASMALL_MANIFEST.json')) {
             $Source = Join-Path $Scripts $File
             if (-not (Test-Path $Source)) { throw "Package script missing: $Source" }
             Copy-Item $Source $Dist
@@ -206,6 +227,8 @@ jobs:
           $Info = @('WoW Legion 7.3.5 build 26972 - Windows x64', 'Source: https://github.com/Titans-Project/LegionCore-Reforged', "Revision: $Sha", "Built UTC: $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))", 'Client files are not included.', 'Build success does not certify every PvE quest, dungeon, raid or class mechanic.') -join [Environment]::NewLine
           Set-Content -Path (Join-Path $Dist 'BUILD_INFO.txt') -Value $Info -Encoding utf8
           if (-not (Test-Path (Join-Path $Dist 'sql/base/world/world_database_01.sql'))) { throw 'World SQL base missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_28_90_atlasmall.sql'))) { throw 'AtlasMall custom SQL missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'ATLASMALL_MANIFEST.json'))) { throw 'AtlasMall manifest missing.' }
 
       - uses: actions/upload-artifact@v4
         with:
