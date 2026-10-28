@@ -31,6 +31,27 @@ jobs:
           ref: main
           path: legion-src
 
+      - name: Restore missing Spell timer accessor in upstream LegionCore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Path = Join-Path $env:GITHUB_WORKSPACE 'legion-src/src/server/game/Spells/Spell.h'
+          $Content = [IO.File]::ReadAllText($Path)
+          $Signature = 'int32 GetRemainingCastTime() const'
+          if (-not $Content.Contains($Signature)) {
+            $Anchor = 'int32 GetCastTime() const { return m_casttime; }'
+            if (-not $Content.Contains($Anchor)) {
+              throw 'Spell API changed: GetCastTime accessor is missing. Refusing to patch unknown source.'
+            }
+            $NewAccessor = 'int32 GetRemainingCastTime() const { return m_timer; }'
+            $Content = $Content.Replace($Anchor, ($Anchor + [Environment]::NewLine + '        ' + $NewAccessor))
+            [IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+            Write-Host 'Added GetRemainingCastTime() accessor to upstream Spell.h clone.'
+          }
+          else {
+            Write-Host 'Upstream Spell.h already has GetRemainingCastTime(); patch not needed.'
+          }
+
       - name: Get OpenSSL installer metadata
         id: openssl-info
         shell: pwsh
