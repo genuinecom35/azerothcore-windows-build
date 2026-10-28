@@ -55,8 +55,8 @@ jobs:
       - name: Register GM-only AtlasMall teleport command
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           & "$env:GITHUB_WORKSPACE/package/legion/patch_gmisland_command.ps1"
-          if ($LASTEXITCODE -ne 0) { throw 'GM Island teleport patch failed' }
 
       - name: Generate AtlasLoot Enhanced vendors on GM Island
         shell: pwsh
