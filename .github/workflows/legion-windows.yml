@@ -51,24 +51,42 @@ jobs:
             Write-Host "Windows PowerShell 5.1 accepts $Name"
           }
 
-      - name: Fix upstream SQL hard-coded hotfix schema name
+      - name: Normalize upstream Legion SQL database names for isolated installation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $Path = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_07_06_violet_hold_millhouse_texts.sql'
-          if (-not (Test-Path -LiteralPath $Path)) { throw 'Expected LegionCore Violet Hold world update is missing.' }
-          $Sql = [IO.File]::ReadAllText($Path)
-          $Old = '`hotfixes_legion`.`broadcast_text`'
-          $New = '`legion735_hotfixes`.`broadcast_text`'
-          if ($Sql.Contains($Old)) {
-            [IO.File]::WriteAllText($Path, $Sql.Replace($Old, $New), [System.Text.UTF8Encoding]::new($false))
-            Write-Host 'Repointed Violet Hold update to the dedicated Legion hotfix database.'
+          $UpdateRoot = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates'
+          if (-not (Test-Path -LiteralPath $UpdateRoot -PathType Container)) { throw 'Legion SQL update directory is missing' }
+          $Mappings = [ordered]@{
+            'world_legion' = 'legion735_world'
+            'hotfixes_legion' = 'legion735_hotfixes'
+            'characters_legion' = 'legion735_characters'
+            'auth_legion' = 'legion735_auth'
           }
-          elseif ($Sql.Contains($New)) {
-            Write-Host 'Violet Hold update already targets Legion hotfix database.'
+          $Edited = 0
+          foreach ($File in Get-ChildItem -LiteralPath $UpdateRoot -File -Filter '*.sql' -Recurse) {
+            $Original = [IO.File]::ReadAllText($File.FullName)
+            $Sql = $Original
+            foreach ($From in $Mappings.Keys) {
+              $Sql = $Sql.Replace($From, $Mappings[$From])
+            }
+            if ($Sql -ne $Original) {
+              [IO.File]::WriteAllText($File.FullName, $Sql, [System.Text.UTF8Encoding]::new($false))
+              $Edited++
+              Write-Host "Patched isolated schema references: $($File.Name)"
+            }
           }
-          else {
-            throw 'Unexpected Violet Hold world SQL content; refusing unsafe replacement.'
+          if ($Edited -eq 0) { Write-Host 'SQL schema references already normalized.' }
+          Write-Host "Patched $Edited SQL update files"
+          foreach ($From in $Mappings.Keys) {
+            $Remaining = Get-ChildItem -LiteralPath $UpdateRoot -File -Filter '*.sql' -Recurse |
+              Select-String -SimpleMatch $From -List
+            if ($Remaining) { throw "Unpatched schema name '$From' remains in active SQL updates" }
+          }
+          $Violet = Join-Path $UpdateRoot 'hotfixes/2026_10_06_07_violet_hold_prison_key.sql'
+          if (-not (Test-Path -LiteralPath $Violet)) { throw 'Expected Violet Hold SQL update missing' }
+          if (-not ([IO.File]::ReadAllText($Violet)).Contains('legion735_world')) {
+            throw 'Violet Hold SQL does not target isolated world database'
           }
 
       - name: Restore missing Spell timer accessor in upstream LegionCore
