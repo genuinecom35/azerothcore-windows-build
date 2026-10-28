@@ -78,12 +78,14 @@ jobs:
         shell: pwsh
         run: |
           $Url = 'https://api.github.com/repos/slproweb/opensslhashes/contents/win32_openssl_hashes.json'
-          $Headers = @{ Accept = 'application/vnd.github.raw+json' }
+          $Headers = @{ Accept = 'application/vnd.github.raw+json'; Authorization = "Bearer $env:GITHUB_TOKEN" }
           $Data = Invoke-RestMethod $Url -Headers $Headers
           $OpenSSL = $Data.files.PSObject.Properties | Select-Object -ExpandProperty Value | Where-Object { $_.arch -eq 'INTEL' -and $_.bits -eq '64' -and $_.light -eq $false -and $_.installer -eq 'exe' -and ([version]$_.basever).Major -eq 3 } | Sort-Object -Descending @{ Expression = { [version]$_.basever } } | Select-Object -First 1
           if (-not $OpenSSL) { throw 'OpenSSL 3.x x64 installer metadata not found.' }
           "url=$($OpenSSL.url)" >> $env:GITHUB_OUTPUT
           "cache-key=openssl-$($OpenSSL.basever)-win-$($OpenSSL.arch)-$($OpenSSL.bits)" >> $env:GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - uses: actions/cache@v4
         id: cache-openssl
