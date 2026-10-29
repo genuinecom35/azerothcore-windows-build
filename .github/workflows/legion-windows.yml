@@ -133,6 +133,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & "$env:GITHUB_WORKSPACE/package/legion/patch_gmisland_command.ps1"
 
+      - name: Repair Nature's Reprisal quest 13946
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/package/legion/patch_natures_reprise.ps1"
+          $Sql = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_30_01_natures_reprise.sql'
+          if (-not (Test-Path -LiteralPath $Sql -PathType Leaf)) { throw 'Nature Reprisal SQL fix not generated' }
+
       - name: Generate AtlasLoot Enhanced vendors on GM Island
         shell: pwsh
         run: |
@@ -319,6 +327,7 @@ jobs:
           Set-Content -Path (Join-Path $Dist 'BUILD_INFO.txt') -Value $Info -Encoding utf8
           if (-not (Test-Path (Join-Path $Dist 'sql/base/world/world_database_01.sql'))) { throw 'World SQL base missing.' }
           if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_28_90_atlasmall.sql'))) { throw 'AtlasMall custom SQL missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_30_01_natures_reprise.sql'))) { throw 'Nature Reprisal SQL fix missing.' }
           if (-not (Test-Path (Join-Path $Dist 'ATLASMALL_MANIFEST.json'))) { throw 'AtlasMall manifest missing.' }
           foreach ($SslFile in @('bnetserver.cert.pem', 'bnetserver.key.pem')) {
             $Path = Join-Path $Dist $SslFile
