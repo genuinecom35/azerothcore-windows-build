@@ -1,0 +1,188 @@
+name: Export latest WoW builds as Drive-ready parts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/drive-export.yml']
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest successful 3.3.5a build
+        uses: actions/download-artifact@v4
+        with:
+          name: AzerothCore-3.3.5a-Windows-x64-Custom
+          run-id: 40536907205
+          github-token: ${{ github.token }}
+          path: source/wotlk
+      - name: Download latest successful 7.3.5 build
+        uses: actions/download-artifact@v4
+        with:
+          name: Legion-7.3.5-Windows-x64
+          run-id: 40744919001
+          github-token: ${{ github.token }}
+          path: source/legion
+      - name: Repackage, split and hash archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out/kit
+          (cd source/wotlk && zip -q -r -9 ../../out/WoW-3.3.5a.zip .)
+          (cd source/legion && zip -q -r -9 ../../out/WoW-7.3.5.zip .)
+          (cd out && sha256sum WoW-3.3.5a.zip WoW-7.3.5.zip > kit/SHA256SUMS.txt)
+          split -b 64m -d -a 3 out/WoW-3.3.5a.zip out/WoW-3.3.5a.zip.part
+          split -b 64m -d -a 3 out/WoW-7.3.5.zip out/WoW-7.3.5.zip.part
+          rm out/WoW-3.3.5a.zip out/WoW-7.3.5.zip
+          cat > out/kit/RESTORE_WOW_ARCHIVES.ps1 <<'PS1'
+          $ErrorActionPreference = 'Stop'
+          $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($PartZip in (Get-ChildItem -LiteralPath $Root -Filter 'WoW-*-part*.zip' -File)) {
+              Write-Host "Extracting $($PartZip.Name)"
+              [System.IO.Compression.ZipFile]::ExtractToDirectory($PartZip.FullName, $Root)
+          }
+          foreach ($Archive in @('WoW-3.3.5a.zip', 'WoW-7.3.5.zip')) {
+              $Destination = Join-Path $Root $Archive
+              $Parts = @(Get-ChildItem -LiteralPath $Root -Filter ($Archive + '.part*') -File | Sort-Object Name)
+              if ($Parts.Count -eq 0) { throw "Parts missing: $Archive" }
+              $Stream = [System.IO.File]::Create($Destination)
+              try {
+                  foreach ($Part in $Parts) {
+                      Write-Host "Joining $($Part.Name)"
+                      $InStream = [System.IO.File]::OpenRead($Part.FullName)
+                      try { $InStream.CopyTo($Stream) } finally { $InStream.Dispose() }
+                  }
+              } finally { $Stream.Dispose() }
+              Write-Host "Rebuilt $Archive" -ForegroundColor Green
+          }
+          Write-Host 'Check SHA256 checksums in SHA256SUMS.txt with Get-FileHash.'
+          PS1
+          cat > out/kit/RESTORE_WOW_ARCHIVES.cmd <<'CMD'
+          @echo off
+          cd /d "%~dp0"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0RESTORE_WOW_ARCHIVES.ps1"
+          echo.
+          pause
+          CMD
+          cat > out/kit/README_RU.txt <<'TXT'
+          Сборки WoW с GitHub Actions:
+          AzerothCore 3.3.5a - успешная #14 (27.10.2026).
+          Legion 7.3.5 - успешная #24 (28.10.2026), русская локаль.
+          
+          Загрузите ВСЕ ZIP-части и ZIP-пакет WoW-RESTORE-KIT с Google Drive в одну папку.
+          Распакуйте только WoW-RESTORE-KIT.zip в эту папку.
+          Запустите RESTORE_WOW_ARCHIVES.cmd: он распакует части и объединит их в два целых ZIP.
+          Сравните SHA256 через Get-FileHash с контрольными суммами в SHA256SUMS.txt.
+          Извлечённые серверные ZIP содержат отдельные сборки; клиент игры не входит.
+          TXT
+      - name: Upload restore kit
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-RESTORE-KIT
+          path: out/kit/
+          retention-days: 5
+          compression-level: 0
+      - name: Upload WotLK part000
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-WotLK-part000
+          path: out/WoW-3.3.5a.zip.part000
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload WotLK part001
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-WotLK-part001
+          path: out/WoW-3.3.5a.zip.part001
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload WotLK part002
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-WotLK-part002
+          path: out/WoW-3.3.5a.zip.part002
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload WotLK part003
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-WotLK-part003
+          path: out/WoW-3.3.5a.zip.part003
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload WotLK part004
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-WotLK-part004
+          path: out/WoW-3.3.5a.zip.part004
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part000
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part000
+          path: out/WoW-7.3.5.zip.part000
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part001
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part001
+          path: out/WoW-7.3.5.zip.part001
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part002
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part002
+          path: out/WoW-7.3.5.zip.part002
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part003
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part003
+          path: out/WoW-7.3.5.zip.part003
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part004
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part004
+          path: out/WoW-7.3.5.zip.part004
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part005
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part005
+          path: out/WoW-7.3.5.zip.part005
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
+      - name: Upload Legion part006
+        uses: actions/upload-artifact@v4
+        with:
+          name: WoW-Legion-part006
+          path: out/WoW-7.3.5.zip.part006
+          retention-days: 5
+          if-no-files-found: ignore
+          compression-level: 0
