@@ -2,11 +2,6 @@ name: Build WoW Legion 7.3.5 (Windows x64)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [legion-7.3.5-build]
-    paths:
-      - '.github/workflows/legion-windows.yml'
-      - 'legion/**'
 
 permissions:
   contents: read
