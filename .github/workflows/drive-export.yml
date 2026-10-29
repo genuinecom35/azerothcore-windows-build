@@ -2,9 +2,6 @@ name: Export latest WoW builds as Drive-ready parts
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/drive-export.yml']
 
 permissions:
   contents: read

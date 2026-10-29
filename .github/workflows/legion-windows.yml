@@ -1,0 +1,340 @@
+name: Build WoW Legion 7.3.5 (Windows x64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      CMAKE_BUILD_TYPE: RelWithDebInfo
+      MYSQL_ROOT_DIR: C:/tools/mysql/current
+      BOOST_ROOT: C:/local/boost_1_84_0
+      OPENSSL_ROOT_DIR: C:/libs/openssl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: legion-7.3.5-build
+          path: package
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Titans-Project/LegionCore-Reforged
+          ref: 6ff03c46b5a1ff0d5bc916bbe3b39ea9c8c03ffe
+          path: legion-src
+
+      - name: Validate end-user scripts with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($Name in @('SETUP_DATABASE.ps1', 'EXTRACT_CLIENT_DATA.ps1')) {
+            $File = Join-Path $env:GITHUB_WORKSPACE ("package/legion/" + $Name)
+            $Bytes = [System.IO.File]::ReadAllBytes($File)
+            if ($Bytes.Length -lt 3 -or $Bytes[0] -ne 239 -or $Bytes[1] -ne 187 -or $Bytes[2] -ne 191) {
+              throw "$Name must be saved as UTF-8 with BOM for Windows PowerShell 5.1"
+            }
+            $Tokens = $null
+            $Errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors) | Out-Null
+            if ($Errors.Count -gt 0) {
+              $Errors | ForEach-Object { Write-Host $_.Message }
+              throw "$Name has PowerShell 5.1 syntax errors"
+            }
+            Write-Host "Windows PowerShell 5.1 accepts $Name"
+          }
+
+      - name: Normalize upstream Legion SQL database names for isolated installation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $UpdateRoot = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates'
+          if (-not (Test-Path -LiteralPath $UpdateRoot -PathType Container)) { throw 'Legion SQL update directory is missing' }
+          $Mappings = [ordered]@{
+            'world_legion' = 'legion735_world'
+            'hotfixes_legion' = 'legion735_hotfixes'
+            'characters_legion' = 'legion735_characters'
+            'auth_legion' = 'legion735_auth'
+          }
+          $Edited = 0
+          foreach ($File in Get-ChildItem -LiteralPath $UpdateRoot -File -Filter '*.sql' -Recurse) {
+            $Original = [IO.File]::ReadAllText($File.FullName)
+            $Sql = $Original
+            foreach ($From in $Mappings.Keys) {
+              $Sql = $Sql.Replace($From, $Mappings[$From])
+            }
+            if ($Sql -ne $Original) {
+              [IO.File]::WriteAllText($File.FullName, $Sql, [System.Text.UTF8Encoding]::new($false))
+              $Edited++
+              Write-Host "Patched isolated schema references: $($File.Name)"
+            }
+          }
+          if ($Edited -eq 0) { Write-Host 'SQL schema references already normalized.' }
+          Write-Host "Patched $Edited SQL update files"
+          foreach ($From in $Mappings.Keys) {
+            $Remaining = Get-ChildItem -LiteralPath $UpdateRoot -File -Filter '*.sql' -Recurse |
+              Select-String -SimpleMatch $From -List
+            if ($Remaining) { throw "Unpatched schema name '$From' remains in active SQL updates" }
+          }
+          $Violet = Join-Path $UpdateRoot 'hotfixes/2026_10_06_07_violet_hold_prison_key.sql'
+          if (-not (Test-Path -LiteralPath $Violet)) { throw 'Expected Violet Hold SQL update missing' }
+          if (-not ([IO.File]::ReadAllText($Violet)).Contains('legion735_world')) {
+            throw 'Violet Hold SQL does not target isolated world database'
+          }
+
+      - name: Verify Russian localization SQL updates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $UpdateRoot = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world'
+          $Required = @(
+            @{ Name = '2026_10_28_00_russian_texts_encoding.sql'; MinimumBytes = 1000000 },
+            @{ Name = '2026_10_28_01_russian_texts_leftovers.sql'; MinimumBytes = 10000 }
+          )
+          foreach ($Entry in $Required) {
+            $Path = Join-Path $UpdateRoot $Entry.Name
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Russian localization SQL update missing: $($Entry.Name)" }
+            $Length = (Get-Item -LiteralPath $Path).Length
+            if ($Length -lt $Entry.MinimumBytes) { throw "Russian localization SQL update looks truncated: $($Entry.Name) ($Length bytes)" }
+            Write-Host "Verified $($Entry.Name) ($Length bytes)"
+          }
+
+      - name: Restore missing Spell timer accessor in upstream LegionCore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Path = Join-Path $env:GITHUB_WORKSPACE 'legion-src/src/server/game/Spells/Spell.h'
+          $Content = [IO.File]::ReadAllText($Path)
+          $Signature = 'int32 GetRemainingCastTime() const'
+          if (-not $Content.Contains($Signature)) {
+            $Anchor = 'int32 GetCastTime() const { return m_casttime; }'
+            if (-not $Content.Contains($Anchor)) {
+              throw 'Spell API changed: GetCastTime accessor is missing. Refusing to patch unknown source.'
+            }
+            $NewAccessor = 'int32 GetRemainingCastTime() const { return m_timer; }'
+            $Content = $Content.Replace($Anchor, ($Anchor + [Environment]::NewLine + '        ' + $NewAccessor))
+            [IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
+            Write-Host 'Added GetRemainingCastTime() accessor to upstream Spell.h clone.'
+          }
+          else {
+            Write-Host 'Upstream Spell.h already has GetRemainingCastTime(); patch not needed.'
+          }
+
+      - name: Register GM-only AtlasMall teleport command
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/package/legion/patch_gmisland_command.ps1"
+
+      - name: Repair Nature's Reprisal quest 13946
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:GITHUB_WORKSPACE/package/legion/patch_natures_reprise.ps1"
+          $Sql = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_30_01_natures_reprise.sql'
+          if (-not (Test-Path -LiteralPath $Sql -PathType Leaf)) { throw 'Nature Reprisal SQL fix not generated' }
+
+      - name: Generate AtlasLoot Enhanced vendors on GM Island
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Generator = Join-Path $env:GITHUB_WORKSPACE 'package/legion/build_atlasmall.py'
+          python -m py_compile $Generator
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall generator syntax check failed' }
+          python $Generator --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall generator self-test failed' }
+          $SqlPath = Join-Path $env:GITHUB_WORKSPACE 'legion-src/sql/updates/world/2026_10_28_90_atlasmall.sql'
+          $ManifestPath = Join-Path $env:GITHUB_WORKSPACE 'package/legion/ATLASMALL_MANIFEST.json'
+          python $Generator --output $SqlPath --manifest $ManifestPath
+          if ($LASTEXITCODE -ne 0) { throw 'AtlasMall SQL generation failed' }
+          if (-not (Test-Path $SqlPath) -or -not (Test-Path $ManifestPath)) { throw 'AtlasMall outputs missing' }
+
+      - name: Get OpenSSL installer metadata
+        id: openssl-info
+        shell: pwsh
+        run: |
+          $Url = 'https://api.github.com/repos/slproweb/opensslhashes/contents/win32_openssl_hashes.json'
+          $Headers = @{ Accept = 'application/vnd.github.raw+json'; Authorization = "Bearer $env:GITHUB_TOKEN" }
+          $Data = Invoke-RestMethod $Url -Headers $Headers
+          $OpenSSL = $Data.files.PSObject.Properties | Select-Object -ExpandProperty Value | Where-Object { $_.arch -eq 'INTEL' -and $_.bits -eq '64' -and $_.light -eq $false -and $_.installer -eq 'exe' -and ([version]$_.basever).Major -eq 3 } | Sort-Object -Descending @{ Expression = { [version]$_.basever } } | Select-Object -First 1
+          if (-not $OpenSSL) { throw 'OpenSSL 3.x x64 installer metadata not found.' }
+          "url=$($OpenSSL.url)" >> $env:GITHUB_OUTPUT
+          "cache-key=openssl-$($OpenSSL.basever)-win-$($OpenSSL.arch)-$($OpenSSL.bits)" >> $env:GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - uses: actions/cache@v4
+        id: cache-openssl
+        with:
+          path: C:/libs/openssl
+          key: ${{ steps.openssl-info.outputs.cache-key }}
+
+      - name: Install OpenSSL
+        if: ${{ steps.cache-openssl.outputs.cache-hit != 'true' }}
+        shell: pwsh
+        run: |
+          $Installer = Join-Path $env:TEMP 'openssl-installer.exe'
+          Invoke-WebRequest -Uri '${{ steps.openssl-info.outputs.url }}' -OutFile $Installer
+          Start-Process -Wait -FilePath $Installer -ArgumentList @('/SILENT','/SP-','/SUPPRESSMSGBOXES',('/DIR=' + $env:OPENSSL_ROOT_DIR))
+          if (-not (Test-Path "$env:OPENSSL_ROOT_DIR/bin/libssl-3-x64.dll")) { throw 'OpenSSL install check failed.' }
+
+      - name: Cache Boost and MySQL
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:/local/boost_1_84_0
+            C:/tools/mysql/current
+          key: legion735-windows-boost184-msvc143-mysql849-v1
+
+      - name: Install Boost 1.84 precompiled binaries
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $BoostRoot = $env:BOOST_ROOT
+          if (-not (Test-Path (Join-Path $BoostRoot 'boost/version.hpp')) -or -not (Test-Path (Join-Path $BoostRoot 'lib64-msvc-14.3'))) {
+            $Url = 'https://downloads.sourceforge.net/project/boost/boost-binaries/1.84.0/boost_1_84_0-msvc-14.3-64.exe'
+            $Exe = Join-Path $env:RUNNER_TEMP 'boost184-msvc143.exe'
+            $Ok = $false
+            for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+              try {
+                Invoke-WebRequest -Uri $Url -OutFile $Exe -UserAgent 'legion735-ci' -ConnectionTimeoutSeconds 60 -OperationTimeoutSeconds 60
+                if ((Get-Item $Exe).Length -lt 150MB) { throw 'Boost installer was unexpectedly small' }
+                $Ok = $true
+                break
+              } catch {
+                Write-Warning "Boost download attempt $Attempt failed: $_"
+                if ($Attempt -lt 3) { Start-Sleep -Seconds 10 }
+              }
+            }
+            if (-not $Ok) { throw 'Could not download official Boost 1.84 prebuilt installer' }
+            $Proc = Start-Process -FilePath $Exe -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/DIR=C:/local/boost_1_84_0') -PassThru -Wait
+            if ($Proc.ExitCode -ne 0) { throw "Boost installer exited with code $($Proc.ExitCode)" }
+          }
+          if (-not (Test-Path (Join-Path $BoostRoot 'boost/version.hpp'))) { throw 'Boost 1.84 headers missing' }
+          if (-not (Test-Path (Join-Path $BoostRoot 'lib64-msvc-14.3'))) { throw 'Boost msvc-14.3 libraries missing' }
+          Write-Host "Boost 1.84.0 is installed: $BoostRoot"
+
+      - name: Install pinned MySQL 8.4 development client
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $MySQL = $env:MYSQL_ROOT_DIR
+          if (-not (Test-Path (Join-Path $MySQL 'lib/mysqlclient.lib'))) {
+            $Zip = Join-Path $env:RUNNER_TEMP 'mysql-8.4.9-win64.zip'
+            Invoke-WebRequest -Uri 'https://cdn.mysql.com/archives/mysql-8.4/mysql-8.4.9-winx64.zip' -OutFile $Zip -UserAgent 'Mozilla/5.0'
+            if ((Get-Item $Zip).Length -lt 50MB) { throw 'MySQL archive was unexpectedly small' }
+            New-Item -ItemType Directory -Path 'C:/tools/mysql' -Force | Out-Null
+            Expand-Archive -Path $Zip -DestinationPath 'C:/tools/mysql' -Force
+            if (Test-Path $MySQL) { Remove-Item -LiteralPath $MySQL -Recurse -Force }
+            Rename-Item -LiteralPath 'C:/tools/mysql/mysql-8.4.9-winx64' -NewName 'current'
+          }
+          foreach ($Rel in @('include/mysql.h','lib/mysqlclient.lib','lib/libmysql.dll','bin/mysql.exe')) {
+            if (-not (Test-Path (Join-Path $MySQL $Rel))) { throw "MySQL prerequisite missing: $Rel" }
+          }
+          Write-Host "MySQL 8.4.9 client found at: $MySQL"
+
+      - uses: egor-tensin/vs-shell@v2
+        with:
+          arch: x64
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:MYSQL_ROOT_DIR/lib/libmysql.dll")) { throw "MySQL client DLL not found at $env:MYSQL_ROOT_DIR" }
+          if (-not (Test-Path "$env:BOOST_ROOT/lib64-msvc-14.3")) { throw 'Boost precompiled libraries not found' }
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -GNinja -S "$env:GITHUB_WORKSPACE/legion-src" -B "$env:GITHUB_WORKSPACE/legion-src/build" "-DCMAKE_BUILD_TYPE=$($env:CMAKE_BUILD_TYPE)" -DTOOLS=ON -DBOOST_ROOT="$env:BOOST_ROOT" -DMYSQL_ROOT_DIR="$env:MYSQL_ROOT_DIR" -DMYSQL_INCLUDE_DIR="$env:MYSQL_ROOT_DIR/include" -DMYSQL_LIBRARY="$env:MYSQL_ROOT_DIR/lib/mysqlclient.lib" -DMYSQL_EXECUTABLE="$env:MYSQL_ROOT_DIR/bin/mysql.exe"
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
+
+      - name: Compile
+        shell: pwsh
+        run: |
+          cmake --build "$env:GITHUB_WORKSPACE/legion-src/build" --config $env:CMAKE_BUILD_TYPE --parallel 4
+          if ($LASTEXITCODE -ne 0) { throw "Build failed: $LASTEXITCODE" }
+
+      - name: Verify binaries
+        shell: pwsh
+        run: |
+          $Bin = Join-Path $env:GITHUB_WORKSPACE "legion-src/build/bin/$env:CMAKE_BUILD_TYPE"
+          foreach ($Exe in @('worldserver.exe','bnetserver.exe','mapextractor.exe','vmap4extractor.exe','vmap4assembler.exe','mmaps_generator.exe','connection_patcher.exe')) {
+            if (-not (Test-Path (Join-Path $Bin $Exe))) { throw "Required executable missing: $Exe" }
+          }
+          Push-Location $Bin
+          try {
+            .\worldserver.exe --version
+            if ($LASTEXITCODE -ne 0) { throw 'worldserver version check failed' }
+            .\bnetserver.exe --version
+            if ($LASTEXITCODE -ne 0) { throw 'bnetserver version check failed' }
+          } finally { Pop-Location }
+
+      - name: Package server
+        shell: pwsh
+        run: |
+          $Workspace = $env:GITHUB_WORKSPACE
+          $Bin = Join-Path $Workspace "legion-src/build/bin/$env:CMAKE_BUILD_TYPE"
+          $Dist = Join-Path $Workspace 'deliver/Legion-7.3.5-Windows-x64'
+          New-Item -ItemType Directory -Path $Dist -Force | Out-Null
+          Copy-Item -Path (Join-Path $Bin '*') -Destination $Dist -Recurse -Force
+          Copy-Item (Join-Path $Workspace 'legion-src/src/server/bnetserver/bnetserver.conf.dist') $Dist
+          # Ninja builds do not execute bnetserver's MSBuild-only post-build copy of the SSL files.
+          # This LegionCore client stack expects the original matching certificate and key pair.
+          foreach ($SslFile in @('bnetserver.cert.pem', 'bnetserver.key.pem')) {
+            $SslSource = Join-Path $Workspace ("legion-src/src/server/bnetserver/" + $SslFile)
+            if (-not (Test-Path -LiteralPath $SslSource -PathType Leaf)) { throw "Missing upstream Battle.net SSL file: $SslFile" }
+            Copy-Item -LiteralPath $SslSource -Destination $Dist -Force
+          }
+          Copy-Item (Join-Path $Workspace 'legion-src/src/server/worldserver/worldserver.conf.dist') $Dist
+          $WorldConfigPath = Join-Path $Dist 'worldserver.conf.dist'
+          $WorldConfig = [IO.File]::ReadAllText($WorldConfigPath)
+          $LocalePattern = '(?m)^\s*DBC\.Locale\s*=.*$'
+          if ($WorldConfig -notmatch $LocalePattern) { throw 'DBC.Locale setting is missing from worldserver.conf.dist' }
+          $WorldConfig = [regex]::Replace($WorldConfig, $LocalePattern, 'DBC.Locale = 8', 1)
+          [IO.File]::WriteAllText($WorldConfigPath, $WorldConfig, [System.Text.UTF8Encoding]::new($false))
+          if ([IO.File]::ReadAllText($WorldConfigPath) -notmatch '(?m)^\s*DBC\.Locale\s*=\s*8\s*$') { throw 'Failed to set Russian DBC.Locale=8 default' }
+          Copy-Item (Join-Path $Workspace 'legion-src/sql') (Join-Path $Dist 'sql') -Recurse -Force
+          $Scripts = Join-Path $Workspace 'package/legion'
+          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','README_RU.md','ALTERSHOP_README_RU.md','ATLASMALL_MANIFEST.json')) {
+            $Source = Join-Path $Scripts $File
+            if (-not (Test-Path $Source)) { throw "Package script missing: $Source" }
+            Copy-Item $Source $Dist
+          }
+          $OpenSslDir = Join-Path $env:OPENSSL_ROOT_DIR 'bin'
+          foreach ($Pair in @(
+            @{ Name = 'libmysql.dll'; Source = (Join-Path $env:MYSQL_ROOT_DIR 'lib/libmysql.dll') },
+            @{ Name = 'libssl-3-x64.dll'; Source = (Join-Path $OpenSslDir 'libssl-3-x64.dll') },
+            @{ Name = 'libcrypto-3-x64.dll'; Source = (Join-Path $OpenSslDir 'libcrypto-3-x64.dll') },
+            @{ Name = 'legacy.dll'; Source = (Join-Path $OpenSslDir 'legacy.dll') }
+          )) {
+            if (-not (Test-Path $Pair.Source)) { throw "Missing runtime DLL: $($Pair.Source)" }
+            Copy-Item $Pair.Source (Join-Path $Dist $Pair.Name) -Force
+          }
+          $Sha = (git -C (Join-Path $Workspace 'legion-src') rev-parse HEAD).Trim()
+          $Info = @('WoW Legion 7.3.5 build 26972 - Windows x64', 'Source: https://github.com/Titans-Project/LegionCore-Reforged', "Revision: $Sha", "Built UTC: $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss'))", 'Client files are not included.', 'Build success does not certify every PvE quest, dungeon, raid or class mechanic.') -join [Environment]::NewLine
+          Set-Content -Path (Join-Path $Dist 'BUILD_INFO.txt') -Value $Info -Encoding utf8
+          if (-not (Test-Path (Join-Path $Dist 'sql/base/world/world_database_01.sql'))) { throw 'World SQL base missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_28_90_atlasmall.sql'))) { throw 'AtlasMall custom SQL missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'sql/updates/world/2026_10_30_01_natures_reprise.sql'))) { throw 'Nature Reprisal SQL fix missing.' }
+          if (-not (Test-Path (Join-Path $Dist 'ATLASMALL_MANIFEST.json'))) { throw 'AtlasMall manifest missing.' }
+          foreach ($SslFile in @('bnetserver.cert.pem', 'bnetserver.key.pem')) {
+            $Path = Join-Path $Dist $SslFile
+            if (-not (Test-Path -LiteralPath $Path -PathType Leaf) -or (Get-Item -LiteralPath $Path).Length -lt 1000) {
+              throw "Battle.net SSL file missing/empty in final artifact: $SslFile"
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Legion-7.3.5-Windows-x64
+          path: deliver/Legion-7.3.5-Windows-x64/
+          if-no-files-found: error
+          retention-days: 14
