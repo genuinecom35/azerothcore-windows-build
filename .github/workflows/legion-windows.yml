@@ -302,7 +302,7 @@ jobs:
           if ([IO.File]::ReadAllText($WorldConfigPath) -notmatch '(?m)^\s*DBC\.Locale\s*=\s*8\s*$') { throw 'Failed to set Russian DBC.Locale=8 default' }
           Copy-Item (Join-Path $Workspace 'legion-src/sql') (Join-Path $Dist 'sql') -Recurse -Force
           $Scripts = Join-Path $Workspace 'package/legion'
-          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','README_RU.md','ALTERSHOP_README_RU.md','ATLASMALL_MANIFEST.json')) {
+          foreach ($File in @('SETUP_DATABASE.ps1','SETUP_DATABASE.cmd','EXTRACT_CLIENT_DATA.ps1','EXTRACT_CLIENT_DATA.cmd','START_SERVER.cmd','PATCH_LEGION_RU.bat','README_RU.md','ALTERSHOP_README_RU.md','ATLASMALL_MANIFEST.json')) {
             $Source = Join-Path $Scripts $File
             if (-not (Test-Path $Source)) { throw "Package script missing: $Source" }
             Copy-Item $Source $Dist
